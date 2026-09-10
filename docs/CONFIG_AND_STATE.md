@@ -80,6 +80,20 @@ field, since `API_KEY` isn't part of that particular sample); in production
 | `time_format` | TV's `timeFormat` (`'HH:mm'` / `'hh:mm A'`) | enum | Cosmetic — the firmware shows countdown minutes, not clock time, in most views; keep if a clock-time view is ever added |
 | `locale` | neither repo sets `locale`/`Accept-Language` today | string | New capability from v4, optional |
 
+NVS/Preferences key names are capped at 15 characters
+(`NVS_KEY_NAME_MAX_SIZE` is 16, including the null terminator) — a key
+longer than that compiles fine but fails at runtime with
+`ESP_ERR_NVS_KEY_TOO_LONG`. Several names above are conceptual/proposed
+rather than the literal on-disk key; `src/transit/config_store.cpp` is the
+source of truth for actual key strings, and abbreviates where the proposed
+name is too long: `refresh_interval_min` → `refresh_int_min`,
+`sleep_window_start`/`sleep_window_end` → `sleep_win_start`/`sleep_win_end`,
+`departure_window_min` → `dep_win_min`, `max_departures_per_direction` →
+`max_dep_per_dir`, `static_direction` → `static_dir`. `hidden_routes[]` /
+`route_order[]` are each stored as one comma-joined string under
+`hidden_routes` / `route_order` respectively (NVS has no native array
+type) — see the accessors' comments in `config_store.cpp`.
+
 Deliberately **not** ported: `data-filter` (dead parameter in the widget's
 own server code — passed through but never read by the actual API call),
 `id`/`title`/`duplicate()` (Transit-TV's multi-screen-config forking has no
