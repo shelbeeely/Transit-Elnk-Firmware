@@ -56,6 +56,15 @@ int computeNextWakeIntervalMin(int refreshIntervalMin, const SleepWindow& window
 // wakeIntervalMin minutes from now, and enters deep sleep. Does not return
 // — the chip resets on wake.
 [[noreturn]] void enterDeepSleep(EInkDisplay& display, int wakeIntervalMin);
+
+// Additive (unit 7): reads the battery level via freeink::BatteryMonitor for
+// main.cpp's BoardStatus::batteryPercent, so main.cpp doesn't need to depend
+// on <BatteryMonitor.h> directly. Returns 0-100, or 0 if the active board
+// profile has no battery telemetry (PIN_UNASSIGNED) or the read fails —
+// deliberately not defaulting to 100, since a silently-full reading would
+// mask a real low-battery condition. Hardware-dependent; not available
+// under [env:native].
+int readBatteryPercent();
 #endif
 
 }  // namespace transit
