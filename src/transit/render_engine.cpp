@@ -37,7 +37,14 @@ namespace fui = freeink::ui;
 // --- panel layout constants (800x480, landscape-native X4) -----------------
 constexpr int16_t kMargin = 16;
 constexpr int16_t kHeaderHeight = 48;
-constexpr int16_t kRowHeight = 74;
+// Row height is a range, not a fixed value: renderDepartureBoard() stretches
+// rows to fill the body area between the header and the attribution footer,
+// so a stop with few routes doesn't leave a dead gap of blank screen below
+// the last row. kMinRowHeight is also what bounds how many rows fit at all
+// (more routes than that just don't get drawn, same as before); kMaxRowHeight
+// keeps a 1-2-route board from stretching into absurdly tall rows.
+constexpr int16_t kMinRowHeight = 74;
+constexpr int16_t kMaxRowHeight = 140;
 constexpr int16_t kRowGap = 8;
 constexpr int16_t kIconColumnWidth = 44;
 constexpr int16_t kLineGap = 4;
@@ -394,17 +401,31 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
   // Reserve the footer strip (plus its own kMargin gap above it) below the
   // last row so the attribution label is never crowded or covered.
   const int16_t bodyBottom = static_cast<int16_t>(screenHeight_ - kMargin - footerHeight);
-  const int maxRows = std::max(0, (bodyBottom - bodyTop + kRowGap) / (kRowHeight + kRowGap));
+  const int16_t bodyHeight = static_cast<int16_t>(bodyBottom - bodyTop);
+  const int maxRows = std::max(0, (bodyHeight + kRowGap) / (kMinRowHeight + kRowGap));
 
   if (board.empty()) {
     fui::TextStyle empty;
     empty.align = fui::TextAlign::Center;
     empty.maxLines = 2;
-    const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin),
-                              static_cast<int16_t>(bodyBottom - bodyTop)};
+    const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin), bodyHeight};
     target_.text(emptyRect, "No departures to show.", empty);
   } else {
     const int rowsToDraw = std::min<int>(maxRows, static_cast<int>(board.size()));
+
+    // Stretch rows to actually fill the body area (clamped to
+    // [kMinRowHeight, kMaxRowHeight]) instead of leaving unused screen space
+    // below the last row when there are fewer routes than maxRows fits.
+    const int16_t idealRowHeight =
+        rowsToDraw > 0 ? static_cast<int16_t>((bodyHeight - (rowsToDraw - 1) * kRowGap) / rowsToDraw)
+                       : kMinRowHeight;
+    const int16_t rowHeight = std::min(kMaxRowHeight, std::max(kMinRowHeight, idealRowHeight));
+    // If the clamp left the row block shorter than the body area (few
+    // routes, each already at kMaxRowHeight), center the block rather than
+    // pinning it to the top with all the leftover space stranded at the
+    // bottom.
+    const int16_t blockHeight = static_cast<int16_t>(rowsToDraw * rowHeight + (rowsToDraw - 1) * kRowGap);
+    const int16_t blockTop = static_cast<int16_t>(bodyTop + std::max<int16_t>(0, (bodyHeight - blockHeight) / 2));
 
     // docs/ASSETS_ICONS.md: routes with visually distinct hex colors can
     // quantize to the same one of the 4 gray levels. Detect that collision
@@ -426,8 +447,8 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
           break;
         }
       }
-      const fui::Rect rowRect{kMargin, static_cast<int16_t>(bodyTop + i * (kRowHeight + kRowGap)),
-                              static_cast<int16_t>(screenWidth_ - 2 * kMargin), kRowHeight};
+      const fui::Rect rowRect{kMargin, static_cast<int16_t>(blockTop + i * (rowHeight + kRowGap)),
+                              static_cast<int16_t>(screenWidth_ - 2 * kMargin), rowHeight};
       drawDirectionRow(target_, iconCache_, rowRect, board[i], status.lastUpdatedEpoch, collision);
     }
   }

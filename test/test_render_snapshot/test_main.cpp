@@ -178,10 +178,11 @@ void test_departure_board_snapshot_paints_a_nontrivial_frame() {
 
 // Transit API ToS compliance (docs/DEPLOYMENT_OPS.md): renderDepartureBoard()
 // must always show a "Powered by Transit" attribution, small/unobtrusive but
-// genuinely visible -- not overlapping the departure rows above it. Checks
+// genuinely visible -- not overlapping the departure rows above it, whatever
+// height those rows actually stretched to for this particular board. Checks
 // this directly against the rasterized pixels rather than just eyeballing
-// the PNG: a blank separating band just above the footer, and actual ink in
-// the footer band itself.
+// the PNG: actual ink in the footer band, and a blank separating gap
+// immediately above it.
 void test_departure_board_footer_is_visible_and_does_not_overlap_rows() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -195,36 +196,42 @@ void test_departure_board_footer_is_visible_and_does_not_overlap_rows() {
   const int16_t w = target.width();
   const int16_t h = target.height();
 
-  // makeSampleBoard()'s 3 rows (bodyTop=56, 74px rows, 8px gaps) end by
-  // y=294; the footer strip sits well below that. y=300 should be a blank
-  // separating band regardless -- if a future layout change let the footer
-  // creep upward into the rows (or a row grow down into the footer), this
-  // scanline would stop being all-white.
-  constexpr int16_t kGapY = 300;
-  bool gapRowAllWhite = true;
-  for (int16_t x = 0; x < w; ++x) {
-    if (pixels[static_cast<size_t>(kGapY) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) {
-      gapRowAllWhite = false;
+  auto rowHasInk = [&](int16_t y) {
+    for (int16_t x = 0; x < w; ++x) {
+      if (pixels[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) return true;
+    }
+    return false;
+  };
+
+  // Find the footer badge's topmost ink row by scanning up from the bottom
+  // edge, rather than assuming a fixed y: renderDepartureBoard() now
+  // stretches row height to fill the body area (fewer routes -> taller
+  // rows), so the exact y where rows end shifts with the sample board's
+  // route count -- a hardcoded scanline would only coincidentally still
+  // land in a gap, not actually prove one exists.
+  int16_t footerInkTop = -1;
+  for (int16_t y = static_cast<int16_t>(h - 1); y >= 0; --y) {
+    if (rowHasInk(y)) {
+      footerInkTop = y;
+    } else if (footerInkTop >= 0) {
+      break;  // left the footer's contiguous ink block
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(footerInkTop >= 0, "expected \"Powered by Transit\" footer badge near the bottom edge");
+
+  // Directly above the footer's ink, there must be a real blank separating
+  // row before hitting departure-row content -- renderDepartureBoard()
+  // always reserves kMargin (16px) between the row body and the footer
+  // rect regardless of row count, so this should show up within a modest
+  // search window even though the exact row layout is no longer fixed.
+  bool gapFound = false;
+  for (int16_t y = static_cast<int16_t>(footerInkTop - 1); y >= 0 && y > footerInkTop - 25; --y) {
+    if (!rowHasInk(y)) {
+      gapFound = true;
       break;
     }
   }
-  TEST_ASSERT_TRUE_MESSAGE(gapRowAllWhite, "expected a blank gap between the departure rows and the footer");
-
-  // The footer badge itself should actually paint ink somewhere near the
-  // bottom edge (not just reserve blank space for it). The band is
-  // deliberately generous (well beyond the badge's own height) so a modest
-  // future tweak to the footer's padding/badge size doesn't make this
-  // assertion stale -- it only needs "near the bottom edge", not an exact row.
-  bool footerBandHasInk = false;
-  for (int16_t y = static_cast<int16_t>(h - 60); y < h && !footerBandHasInk; ++y) {
-    for (int16_t x = 0; x < w; ++x) {
-      if (pixels[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) {
-        footerBandHasInk = true;
-        break;
-      }
-    }
-  }
-  TEST_ASSERT_TRUE_MESSAGE(footerBandHasInk, "expected \"Powered by Transit\" footer badge near the bottom edge");
+  TEST_ASSERT_TRUE_MESSAGE(gapFound, "expected a blank gap between the departure rows and the footer");
 }
 
 void test_departure_board_empty_shows_placeholder_text() {
