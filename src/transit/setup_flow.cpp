@@ -1,25 +1,36 @@
 // First-run on-device provisioning (see include/transit/setup_flow.h).
 //
-// Text entry has no touch/keyboard on the X4, so every prompt is answered
-// through a paired BLE HID keyboard (FreeInk's BleKeyboardHost): printable
-// keys build up a line buffer, Backspace edits it, Enter confirms, Escape
-// backs out of the current step. Wi-Fi network / stop-search results are
-// picked from a list with Up/Down + Enter. All screens go through
-// RenderEngine::renderSetupPrompt/renderSetupList (unit 5) so this file
-// never touches EInkDisplay directly.
+// Text entry happens off-device, in a captive-portal web page: the X4 boots
+// a fixed-SSID Wi-Fi AP ("TransitBoard-Setup") alongside its STA interface
+// (WIFI_AP_STA — the AP stays up for the whole flow), a DNSServer answers
+// every DNS query with the AP's own IP so phones auto-prompt "Sign in to
+// network," and a WebServer serves one inline-HTML/JS page plus JSON
+// endpoints the page's JS calls. All on-device text (the phone can't see
+// the panel) goes through RenderEngine::renderSetupPrompt (unit 5) — just
+// the handful of top-level instructions/status a phone user can't see yet;
+// list-picking (networks, stops) now happens in the browser, not on the
+// e-ink screen, so renderSetupList is unused here.
 //
 // Each step writes to configStore_ the moment it's confirmed, and every
 // step first checks whether configStore_ already has a value (i.e. this is
-// a resume after an interrupted setup) before prompting again — see the
+// a resume after an interrupted setup) before asking again — see the
 // header comment on runFirstTimeSetup for why.
+//
+// No HTTPS/auth on the setup AP: it's a fresh AP the device itself just
+// created, reachable only by someone physically close enough to join it —
+// that proximity requirement is the access control, the same reasoning
+// WiFiManager-style local provisioning portals rely on generally. Adding a
+// self-signed TLS cert to a device serving its own first-boot setup page
+// would not meaningfully improve on that.
 
 #include "transit/setup_flow.h"
 
+#include <ArduinoJson.h>
 #include <Arduino.h>
-#include <BleKeyboardHost.h>
 #include <WiFi.h>
 
 #include <algorithm>
+#include <climits>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -28,8 +39,34 @@ namespace transit {
 
 namespace {
 
-// --- Small parsing helper (no exceptions: strtod, not std::stod) -----------
+constexpr const char* kApSsid = "TransitBoard-Setup";
+constexpr uint16_t kDnsPort = 53;
+constexpr uint16_t kHttpPort = 80;
 
+// Per-attempt Wi-Fi connect timeout (STA only — the AP interface never
+// drops). Mirrors the previous BLE-flow's tryConnectWifi timeout.
+constexpr uint32_t kWifiConnectTimeoutMs = 20000;
+
+// Guards against a portal left unattended forever (e.g. the user closed the
+// browser tab and walked away) draining the battery instead of resuming on
+// the next wake. Reset by touchActivity() on every HTTP request handled.
+constexpr uint32_t kSetupIdleTimeoutMs = 20UL * 60UL * 1000UL;
+
+// Once configStore_.isProvisioned() goes true, keep the portal up briefly
+// so the page's in-flight/next status poll can render the "done" screen
+// before the AP disappears out from under it.
+constexpr uint32_t kProvisionedLingerMs = 5000;
+
+// Fixed placeholder coordinate purely to exercise the API for key
+// validation — the device has no GPS. Same point root CLAUDE.md's own curl
+// validation example uses (step 4), not a real location.
+constexpr double kKeyCheckLat = 45.5017;
+constexpr double kKeyCheckLon = -73.5673;
+
+// No GPS on the X4 (docs/CONFIG_AND_STATE.md), so the user supplies an
+// approximate search-area center themselves (looked up once off-device, in
+// any maps app) rather than relying on a live radius search every poll —
+// now typed into a web form field instead of typed via a paired keyboard.
 bool parseDouble(const std::string& text, double& out) {
   if (text.empty()) return false;
   const char* start = text.c_str();
@@ -40,435 +77,487 @@ bool parseDouble(const std::string& text, double& out) {
   return true;
 }
 
-// "lat,lon" (optional surrounding whitespace on either half).
-bool parseLatLon(const std::string& text, double& lat, double& lon) {
-  size_t comma = text.find(',');
-  if (comma == std::string::npos) return false;
-  std::string latPart = text.substr(0, comma);
-  std::string lonPart = text.substr(comma + 1);
-  auto trim = [](std::string& s) {
-    size_t begin = s.find_first_not_of(" \t");
-    if (begin == std::string::npos) {
-      s.clear();
-      return;
-    }
-    size_t last = s.find_last_not_of(" \t");
-    s = s.substr(begin, last - begin + 1);
-  };
-  trim(latPart);
-  trim(lonPart);
-  double parsedLat = 0.0;
-  double parsedLon = 0.0;
-  if (!parseDouble(latPart, parsedLat) || !parseDouble(lonPart, parsedLon)) return false;
-  if (parsedLat < -90.0 || parsedLat > 90.0 || parsedLon < -180.0 || parsedLon > 180.0) {
-    return false;
-  }
-  lat = parsedLat;
-  lon = parsedLon;
-  return true;
+// The setup page, served as one inline document (no SPIFFS/filesystem
+// pipeline needed for a simple form-based UI). Kept minimal/functional
+// rather than fancy. JS drives four steps by showing/hiding <section>s and
+// polling/posting the JSON endpoints registered in SetupFlow::startPortal.
+const char kSetupPageHtml[] PROGMEM = R"HTML(<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit Board Setup</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:480px;margin:1.5em auto;padding:0 1em;color:#222}
+h1{font-size:1.2em}
+section{display:none;margin-bottom:1.5em}
+section.active{display:block}
+label{display:block;margin:.8em 0 .2em}
+input,select{width:100%;box-sizing:border-box;padding:.5em;font-size:1em}
+button{margin-top:1em;padding:.6em 1.2em;font-size:1em}
+ul{list-style:none;padding:0}
+li{padding:.5em;border:1px solid #ccc;border-radius:4px;margin:.3em 0;cursor:pointer}
+li:hover{background:#f0f0f0}
+.msg{margin-top:.6em;font-size:.9em}
+.msg.err{color:#b00}
+.msg.ok{color:#0a0}
+</style></head>
+<body>
+<h1>Transit Board Setup</h1>
+
+<section id="step-wifi" class="active">
+<p>Step 1 of 3 &mdash; Wi-Fi</p>
+<label>Nearby networks</label>
+<ul id="ssid-list"><li>Scanning&hellip;</li></ul>
+<label>Network name (SSID)</label>
+<input id="ssid" placeholder="Network name">
+<label>Password</label>
+<input id="password" type="password" placeholder="Leave blank if open">
+<button id="connect-btn" onclick="connectWifi()">Connect</button>
+<div id="wifi-msg" class="msg"></div>
+</section>
+
+<section id="step-apikey">
+<p>Step 2 of 3 &mdash; Transit API key</p>
+<label>API key</label>
+<input id="apikey" type="password" placeholder="Paste your Transit API key">
+<button onclick="submitApiKey()">Validate &amp; save</button>
+<div id="apikey-msg" class="msg"></div>
+</section>
+
+<section id="step-stop">
+<p>Step 3 of 3 &mdash; Find your stop</p>
+<label>Approximate latitude</label>
+<input id="lat" placeholder="e.g. 45.5017">
+<label>Approximate longitude</label>
+<input id="lon" placeholder="e.g. -73.5673">
+<label>Stop name (part of it)</label>
+<input id="query" placeholder="e.g. Main St">
+<button onclick="searchStops()">Search</button>
+<div id="stop-msg" class="msg"></div>
+<ul id="stop-list"></ul>
+</section>
+
+<section id="step-done">
+<h2>Setup complete</h2>
+<p id="done-msg">Your board is ready. You can close this page.</p>
+</section>
+
+<script>
+function el(id){return document.getElementById(id);}
+function showStep(id){
+  document.querySelectorAll('section').forEach(function(s){s.classList.remove('active');});
+  el(id).classList.add('active');
+}
+function setMsg(id,text,cls){
+  var m=el(id); m.textContent=text; m.className='msg'+(cls?(' '+cls):'');
 }
 
-// --- BLE keyboard pairing ---------------------------------------------------
+function loadScan(){
+  fetch('/scan').then(function(r){return r.json();}).then(function(list){
+    var ul=el('ssid-list'); ul.innerHTML='';
+    if(list.length===0){ ul.innerHTML='<li>No networks found &mdash; type one below.</li>'; return; }
+    list.forEach(function(ssid){
+      var li=document.createElement('li');
+      li.textContent=ssid;
+      li.onclick=function(){ el('ssid').value=ssid; };
+      ul.appendChild(li);
+    });
+  }).catch(function(){ el('ssid-list').innerHTML='<li>Scan failed &mdash; type a network name below.</li>'; });
+}
 
-// Generous but bounded: a device left mid-setup with no keyboard in range
-// must not spin forever on battery. main.cpp deep-sleeps 1 minute and
-// retries setup on the next boot when runFirstTimeSetup() returns with the
-// device still unprovisioned, so giving up here just means "try again soon"
-// rather than "stuck".
-constexpr uint32_t kPairingTimeoutMs = 5UL * 60UL * 1000UL;
-// Bonded keyboards auto-reconnect via BleKeyboardHost::poll() on its own
-// backoff; give that a moment before we additionally kick off a scan.
-constexpr uint32_t kAutoReconnectGraceMs = 4000;
+function connectWifi(){
+  var ssid=el('ssid').value.trim();
+  if(!ssid){ setMsg('wifi-msg','Enter or pick a network name first.','err'); return; }
+  setMsg('wifi-msg','Connecting to "'+ssid+'"...','');
+  var body='ssid='+encodeURIComponent(ssid)+'&password='+encodeURIComponent(el('password').value);
+  fetch('/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then(function(r){return r.json().then(function(res){return {status:r.status,res:res};});})
+    .then(function(result){
+      if(result.status!==200 || !result.res.ok){ setMsg('wifi-msg',(result.res&&result.res.message)||'Could not connect. Try again.','err'); return; }
+      pollStatus();
+    })
+    .catch(function(){ setMsg('wifi-msg','Could not reach the board. Try again.','err'); });
+}
 
-bool pairBleKeyboard(RenderEngine& renderEngine) {
-  if (!BleHid.isRunning()) {
-    renderEngine.renderSetupPrompt("Bluetooth", "Starting Bluetooth...");
-    if (!BleHid.begin("Transit Board")) {
-      renderEngine.renderSetupPrompt("Setup paused",
-                                      "Bluetooth failed to start.\nWill retry on next wake.");
-      return false;
-    }
-  }
-  if (BleHid.isConnected()) return true;
-
-  bool havePairedDevices = BleHid.pairedCount() > 0;
-  renderEngine.renderSetupPrompt("Pair a Bluetooth keyboard",
-                                  havePairedDevices
-                                      ? "Reconnecting to your keyboard..."
-                                      : "Put your keyboard in pairing\nmode. Scanning...");
-
-  uint32_t startMs = millis();
-  bool scanRequested = false;
-  while (!BleHid.isConnected()) {
-    BleHid.poll();
-
-    uint32_t elapsedMs = millis() - startMs;
-    if (!scanRequested && !BleHid.isScanning() && !BleHid.isConnecting() &&
-        (!havePairedDevices || elapsedMs > kAutoReconnectGraceMs)) {
-      BleHid.startScan(6000);
-      scanRequested = true;
-    } else if (scanRequested && !BleHid.isScanning() && !BleHid.isConnecting()) {
-      int foundIdx = -1;
-      for (uint8_t i = 0; i < BleHid.deviceCount(); ++i) {
-        if (BleHid.device(i).hid) {
-          foundIdx = static_cast<int>(i);
-          break;
-        }
+var statusTimer=null;
+function pollStatus(){
+  if(statusTimer) clearTimeout(statusTimer);
+  fetch('/status').then(function(r){return r.json();}).then(function(s){
+    if(s.wifiState==='connecting'){
+      setMsg('wifi-msg','Connecting...','');
+      statusTimer=setTimeout(pollStatus,1500);
+    } else if(s.wifiState==='failed'){
+      setMsg('wifi-msg','Could not connect. Check the password and try again.','err');
+    } else if(s.wifiState==='connected' || s.apiKeySet || s.stopSet){
+      if(s.wifiState==='connected'){ setMsg('wifi-msg','Connected.','ok'); }
+      if(s.provisioned){
+        showStep('step-done');
+      } else if(s.apiKeySet){
+        showStep('step-stop');
+      } else {
+        showStep('step-apikey');
       }
-      if (foundIdx >= 0) {
-        std::string addr(BleHid.device(static_cast<uint8_t>(foundIdx)).addr);
-        BleHid.releaseScanResults();
-        BleHid.connect(addr.c_str());
-      }
-      // No HID device found this pass (or connect() above is now pending) —
-      // either way, fall through and let the timeout/loop decide whether to
-      // scan again.
-      scanRequested = false;
     }
-
-    if (millis() - startMs > kPairingTimeoutMs) {
-      renderEngine.renderSetupPrompt("Setup paused", "No keyboard found.\nWill retry on next wake.");
-      return false;
-    }
-    delay(50);
-  }
-
-  renderEngine.renderSetupPrompt("Keyboard connected", BleHid.connectedName());
-  delay(1000);
-  return true;
+  }).catch(function(){ statusTimer=setTimeout(pollStatus,2000); });
 }
 
-// --- Line editing via the paired keyboard -----------------------------------
-
-constexpr size_t kMaxLineLen = 128;
-// Guards against a setup screen left unattended forever (e.g. the user
-// walked away mid-entry) draining the battery instead of resuming later.
-constexpr uint32_t kLineIdleTimeoutMs = 10UL * 60UL * 1000UL;
-
-// Reads one line of text via the paired BLE keyboard, redrawing `title` +
-// `promptBody` (plus the in-progress text) after every keystroke. `mask`
-// draws asterisks instead of the actual characters for sensitive fields
-// (Wi-Fi password, API key) — never the literal text — matching root
-// CLAUDE.md's "never print a full API key" guardrail on-device too.
-// Sets `cancelled` (Escape, or the idle timeout) and returns whatever was
-// typed so far; callers treat a cancelled read as "abort this step".
-std::string readLine(RenderEngine& renderEngine, const std::string& title,
-                      const std::string& promptBody, bool mask, bool& cancelled) {
-  cancelled = false;
-  std::string text;
-
-  auto render = [&]() {
-    std::string shown = mask ? std::string(text.size(), '*') : text;
-    renderEngine.renderSetupPrompt(title, promptBody + "\n\n> " + shown + "_");
-  };
-  render();
-
-  uint32_t lastActivityMs = millis();
-  while (true) {
-    BleHid.poll();
-    freeink::KeyEvent ev;
-    if (!BleHid.popKey(ev)) {
-      if (millis() - lastActivityMs > kLineIdleTimeoutMs) {
-        cancelled = true;
-        return text;
-      }
-      delay(20);
-      continue;
-    }
-    lastActivityMs = millis();
-
-    if (ev.special == freeink::SpecialKey::Enter) {
-      break;
-    } else if (ev.special == freeink::SpecialKey::Escape) {
-      cancelled = true;
-      break;
-    } else if (ev.special == freeink::SpecialKey::Backspace) {
-      if (!text.empty()) {
-        text.pop_back();
-        render();
-      }
-    } else if (ev.ch != 0 && text.size() < kMaxLineLen) {
-      text.push_back(ev.ch);
-      render();
-    }
-  }
-  return text;
+function submitApiKey(){
+  var key=el('apikey').value.trim();
+  if(!key){ setMsg('apikey-msg','Paste your API key first.','err'); return; }
+  setMsg('apikey-msg','Checking key...','');
+  fetch('/apikey',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'key='+encodeURIComponent(key)})
+    .then(function(r){return r.json();}).then(function(res){
+      if(res.ok){ setMsg('apikey-msg','Key accepted, ending in '+res.keySuffix+'.','ok'); showStep('step-stop'); }
+      else { setMsg('apikey-msg',res.message||'Key rejected. Try again.','err'); }
+    }).catch(function(){ setMsg('apikey-msg','Could not reach the board. Try again.','err'); });
 }
 
-// --- List picking via the paired keyboard -----------------------------------
-
-constexpr uint32_t kListIdleTimeoutMs = 10UL * 60UL * 1000UL;
-
-// Returns the chosen index, or -1 on Escape/idle-timeout/empty list.
-int selectFromList(RenderEngine& renderEngine, const std::string& title,
-                    const std::vector<std::string>& items) {
-  if (items.empty()) return -1;
-
-  int selected = 0;
-  renderEngine.renderSetupList(title, items, selected);
-
-  uint32_t lastActivityMs = millis();
-  while (true) {
-    BleHid.poll();
-    freeink::KeyEvent ev;
-    if (!BleHid.popKey(ev)) {
-      if (millis() - lastActivityMs > kListIdleTimeoutMs) return -1;
-      delay(20);
-      continue;
-    }
-    lastActivityMs = millis();
-
-    if (ev.special == freeink::SpecialKey::Down) {
-      selected = (selected + 1) % static_cast<int>(items.size());
-      renderEngine.renderSetupList(title, items, selected);
-    } else if (ev.special == freeink::SpecialKey::Up) {
-      selected = (selected - 1 + static_cast<int>(items.size())) % static_cast<int>(items.size());
-      renderEngine.renderSetupList(title, items, selected);
-    } else if (ev.special == freeink::SpecialKey::Enter) {
-      return selected;
-    } else if (ev.special == freeink::SpecialKey::Escape) {
-      return -1;
-    }
-  }
+function searchStops(){
+  var lat=el('lat').value.trim(), lon=el('lon').value.trim(), query=el('query').value.trim();
+  setMsg('stop-msg','Searching...','');
+  el('stop-list').innerHTML='';
+  var body='lat='+encodeURIComponent(lat)+'&lon='+encodeURIComponent(lon)+'&query='+encodeURIComponent(query);
+  fetch('/stopsearch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then(function(r){return r.json();}).then(function(res){
+      if(!res.ok){ setMsg('stop-msg',res.message||'No stops found.','err'); return; }
+      setMsg('stop-msg','Pick your stop:','');
+      var ul=el('stop-list');
+      res.results.forEach(function(item){
+        var li=document.createElement('li');
+        li.textContent=item.name+(item.distanceMeters>0?(' ('+Math.round(item.distanceMeters)+'m)'):'');
+        li.onclick=function(){ selectStop(item.index); };
+        ul.appendChild(li);
+      });
+    }).catch(function(){ setMsg('stop-msg','Could not reach the board. Try again.','err'); });
 }
 
-// --- Wi-Fi ------------------------------------------------------------------
-
-bool tryConnectWifi(const std::string& ssid, const std::string& password) {
-  if (ssid.empty()) return false;
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid.c_str(), password.empty() ? nullptr : password.c_str());
-  uint32_t startMs = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 20000) {
-    delay(250);
-  }
-  return WiFi.status() == WL_CONNECTED;
+function selectStop(index){
+  setMsg('stop-msg','Saving...','');
+  fetch('/stopselect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'index='+encodeURIComponent(index)})
+    .then(function(r){return r.json();}).then(function(res){
+      if(res.ok){ el('done-msg').textContent='Stop saved: '+res.stopName+'. Your board is ready. You can close this page.'; showStep('step-done'); }
+      else { setMsg('stop-msg',res.message||'Could not save that stop.','err'); }
+    }).catch(function(){ setMsg('stop-msg','Could not reach the board. Try again.','err'); });
 }
 
-// Scans for nearby networks and lets the user pick one (or type an SSID by
-// hand, for hidden networks / if the scan comes back empty).
-bool scanAndPickSsid(RenderEngine& renderEngine, std::string& ssidOut) {
-  renderEngine.renderSetupPrompt("Wi-Fi", "Scanning for networks...");
-  WiFi.mode(WIFI_STA);
-  int found = WiFi.scanNetworks();
-
-  std::vector<std::string> ssids;
-  std::vector<std::string> items;
-  if (found > 0) {
-    for (int i = 0; i < found; ++i) {
-      std::string ssid(WiFi.SSID(i).c_str());
-      if (ssid.empty()) continue;
-      if (std::find(ssids.begin(), ssids.end(), ssid) != ssids.end()) continue;  // dedupe APs
-      ssids.push_back(ssid);
-      items.push_back(ssid);
-    }
-  }
-  WiFi.scanDelete();
-  items.push_back("[Enter network name manually]");
-
-  int idx = selectFromList(renderEngine, "Select your Wi-Fi network", items);
-  if (idx < 0) return false;  // cancelled
-
-  if (idx == static_cast<int>(items.size()) - 1) {
-    bool cancelled = false;
-    std::string manual =
-        readLine(renderEngine, "Wi-Fi network name", "Type the network name (SSID):", false, cancelled);
-    if (cancelled || manual.empty()) return false;
-    ssidOut = manual;
-  } else {
-    ssidOut = ssids[static_cast<size_t>(idx)];
-  }
-  return true;
-}
-
-// Interactive pick-network -> enter-password -> connect -> save loop. Only
-// entered when there's no usable saved Wi-Fi (see ensureWifiConnected).
-bool connectAndSaveWifi(RenderEngine& renderEngine, ConfigStore& configStore) {
-  while (true) {
-    std::string ssid;
-    if (!scanAndPickSsid(renderEngine, ssid)) return false;
-
-    bool cancelled = false;
-    std::string password = readLine(renderEngine, "Wi-Fi password",
-                                     "Enter the password for \"" + ssid +
-                                         "\",\nthen press Enter (leave blank\nif this network is open).",
-                                     /*mask=*/true, cancelled);
-    if (cancelled) return false;
-
-    renderEngine.renderSetupPrompt("Wi-Fi", "Connecting to \"" + ssid + "\"...");
-    if (tryConnectWifi(ssid, password)) {
-      configStore.setWifiSsid(ssid);
-      configStore.setWifiPassword(password);
-      renderEngine.renderSetupPrompt("Wi-Fi connected", "Connected to \"" + ssid + "\".");
-      delay(1000);
-      return true;
-    }
-
-    renderEngine.renderSetupPrompt("Wi-Fi",
-                                    "Couldn't connect to \"" + ssid + "\".\nCheck the password and try again.");
-    delay(2000);
-  }
-}
-
-// Wi-Fi credentials may already be stored (a resume after an interrupted
-// setup, or after a later re-run — this device has no "settings" UI beyond
-// first-run setup). Try them silently first so a returning user isn't
-// re-interviewed for a network that still works; fall back to the
-// interactive picker only if that fails or nothing was stored yet.
-bool ensureWifiConnected(RenderEngine& renderEngine, ConfigStore& configStore) {
-  std::string savedSsid = configStore.wifiSsid();
-  if (!savedSsid.empty()) {
-    if (tryConnectWifi(savedSsid, configStore.wifiPassword())) return true;
-    renderEngine.renderSetupPrompt("Wi-Fi", "Couldn't reconnect to the saved\nnetwork. Let's pick again.");
-    delay(1500);
-  }
-  return connectAndSaveWifi(renderEngine, configStore);
-}
-
-// --- Transit API key ---------------------------------------------------------
-
-// Fixed placeholder coordinate purely to exercise the API for key
-// validation — the device has no GPS. Same point root CLAUDE.md's own curl
-// validation example uses (step 4), not a real location.
-constexpr double kKeyCheckLat = 45.5017;
-constexpr double kKeyCheckLon = -73.5673;
-
-bool promptAndValidateApiKey(RenderEngine& renderEngine, TransitApiClient& apiClient,
-                              ConfigStore& configStore) {
-  while (true) {
-    bool cancelled = false;
-    std::string key = readLine(renderEngine, "Transit API key",
-                                "Paste your Transit API key,\nthen press Enter.", /*mask=*/true, cancelled);
-    if (cancelled) return false;
-    if (key.empty()) {
-      renderEngine.renderSetupPrompt("Transit API key", "The key can't be empty. Try again.");
-      delay(1500);
-      continue;
-    }
-
-    renderEngine.renderSetupPrompt("Transit API key", "Checking key...");
-    apiClient.setApiKey(key);
-
-    NearbyStopsParams params;
-    params.maxDistanceMeters = 500;
-    NearbyStopsResponse response;
-    bool ok = apiClient.nearbyStops(kKeyCheckLat, kKeyCheckLon, params, response);
-    if (ok) {
-      configStore.setApiKey(key);
-      // Never show the full key on-device either (root CLAUDE.md's "truncate
-      // to the last few characters" guardrail) — a short key just shows as
-      // fully masked rather than falling back to printing it whole.
-      std::string suffix = key.size() > 4 ? ("..." + key.substr(key.size() - 4)) : "(hidden)";
-      renderEngine.renderSetupPrompt("Transit API key", "Key accepted, ending in " + suffix + ".");
-      delay(1200);
-      return true;
-    }
-
-    renderEngine.renderSetupPrompt(
-        "Transit API key",
-        "Key rejected, or offline.\nA freshly issued key can take a\nmoment to propagate. Try again.");
-    delay(2000);
-  }
-}
-
-// --- Stop pick ---------------------------------------------------------------
-
-// No GPS on the X4 (docs/CONFIG_AND_STATE.md), so the user supplies an
-// approximate search-area center by hand rather than relying on a live
-// radius search every poll. Coordinates are looked up once off-device (any
-// maps app) and typed in — impractical to replace with a typed
-// address/city without pulling in a geocoder, so this is left to
-// search_stops' own text-query matching within that area (max_distance is
-// left unset — see SearchStopsParams' default — so the query text and the
-// picker do the narrowing, not a client-side radius guess).
-bool pickStop(RenderEngine& renderEngine, TransitApiClient& apiClient, ConfigStore& configStore) {
-  while (true) {
-    bool cancelled = false;
-    std::string coordText =
-        readLine(renderEngine, "Stop search area",
-                 "Enter approximate coordinates as\nlat,lon (e.g. 45.50,-73.57)\nfrom a maps app on your phone.",
-                 /*mask=*/false, cancelled);
-    if (cancelled) return false;
-
-    double lat = 0.0;
-    double lon = 0.0;
-    if (!parseLatLon(coordText, lat, lon)) {
-      renderEngine.renderSetupPrompt("Stop search area",
-                                      "Couldn't read that. Format:\nlat,lon (e.g. 45.50,-73.57)");
-      delay(1800);
-      continue;
-    }
-
-    std::string query = readLine(renderEngine, "Stop name",
-                                  "Type part of the stop name,\nthen press Enter (e.g. \"Main St\").",
-                                  /*mask=*/false, cancelled);
-    if (cancelled) return false;
-
-    renderEngine.renderSetupPrompt("Searching", "Looking up stops...");
-    SearchStopsParams params;
-    params.maxNumResults = 20;
-    SearchStopsResponse response;
-    bool ok = apiClient.searchStops(lat, lon, query, params, response);
-    if (!ok || response.results.empty()) {
-      renderEngine.renderSetupPrompt(
-          "No stops found", "No matching stops near that area.\nCheck the coordinates/spelling\nand try again.");
-      delay(2000);
-      continue;
-    }
-
-    std::vector<std::string> items;
-    items.reserve(response.results.size());
-    for (const auto& result : response.results) {
-      std::string label = result.stopName;
-      if (result.distanceMeters > 0) {
-        label += " (" + std::to_string(static_cast<int>(result.distanceMeters)) + "m)";
-      }
-      items.push_back(label);
-    }
-
-    int idx = selectFromList(renderEngine, "Select your stop", items);
-    if (idx < 0) continue;  // back to search rather than aborting setup
-
-    const SearchStopResult& chosen = response.results[static_cast<size_t>(idx)];
-    configStore.setStopId(chosen.globalStopId);
-    renderEngine.renderSetupPrompt("Stop saved", chosen.stopName);
-    delay(1200);
-    return true;
-  }
-}
+loadScan();
+pollStatus();
+</script>
+</body></html>
+)HTML";
 
 }  // namespace
 
 SetupFlow::SetupFlow(ConfigStore& configStore, TransitApiClient& apiClient, RenderEngine& renderEngine)
-    : configStore_(configStore), apiClient_(apiClient), renderEngine_(renderEngine) {}
+    : configStore_(configStore),
+      apiClient_(apiClient),
+      renderEngine_(renderEngine),
+      server_(kHttpPort) {}
+
+void SetupFlow::touchActivity() { lastActivityMs_ = millis(); }
+
+void SetupFlow::startPortal() {
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(kApSsid);
+  IPAddress apIp = WiFi.softAPIP();
+  dnsServer_.start(kDnsPort, "*", apIp);
+
+  server_.on("/", HTTP_GET, [this]() { handleRoot(); });
+  server_.on("/scan", HTTP_GET, [this]() { handleScan(); });
+  server_.on("/connect", HTTP_POST, [this]() { handleConnect(); });
+  server_.on("/status", HTTP_GET, [this]() { handleStatus(); });
+  server_.on("/apikey", HTTP_POST, [this]() { handleApiKey(); });
+  server_.on("/stopsearch", HTTP_POST, [this]() { handleStopSearch(); });
+  server_.on("/stopselect", HTTP_POST, [this]() { handleStopSelect(); });
+
+  // Common captive-portal probe URLs (Android/Chrome, iOS/macOS, Windows) —
+  // redirecting these to "/" is what makes phones auto-open the portal
+  // instead of silently deciding the AP has no internet and moving on.
+  const char* probeUrls[] = {
+      "/generate_204",       "/gen_204",          "/hotspot-detect.html",
+      "/library/test/success.html", "/ncsi.txt",   "/connecttest.txt",
+      "/success.txt",        "/fwlink",
+  };
+  for (const char* url : probeUrls) {
+    server_.on(url, HTTP_GET, [this]() { handleCaptiveRedirect(); });
+  }
+  server_.onNotFound([this]() { handleNotFound(); });
+
+  server_.begin();
+  touchActivity();
+}
+
+void SetupFlow::stopPortal() {
+  server_.stop();
+  dnsServer_.stop();
+  // Drop the AP only (not softAPdisconnect(true), which powers the whole
+  // Wi-Fi driver off) — main.cpp does its own WiFi.mode(WIFI_STA)/
+  // WiFi.begin() right after runFirstTimeSetup() returns regardless, so
+  // there's no reason to force a full radio teardown here.
+  WiFi.softAPdisconnect(false);
+  WiFi.mode(WIFI_STA);
+}
+
+void SetupFlow::pollWifiConnectState() {
+  if (wifiConnectState_ != WifiConnectState::kConnecting) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnectState_ = WifiConnectState::kConnected;
+    configStore_.setWifiSsid(pendingSsid_);
+    configStore_.setWifiPassword(pendingPassword_);
+    return;
+  }
+  if (millis() - wifiConnectStartMs_ > kWifiConnectTimeoutMs) {
+    wifiConnectState_ = WifiConnectState::kFailed;
+  }
+}
+
+// --- Route handlers ----------------------------------------------------------
+
+void SetupFlow::handleRoot() {
+  touchActivity();
+  server_.send_P(200, "text/html", kSetupPageHtml);
+}
+
+void SetupFlow::handleScan() {
+  touchActivity();
+  // Skip the actual radio scan while a STA connect attempt (e.g. the
+  // background resume-with-saved-credentials one runFirstTimeSetup() may
+  // have kicked off) is in flight: scanning on the same radio mid-association
+  // routinely aborts/restarts an ESP32 station connection. The page's own
+  // manual-SSID field still works as a fallback for this brief window.
+  int found = wifiConnectState_ == WifiConnectState::kConnecting ? 0 : WiFi.scanNetworks();
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  std::vector<std::string> seen;
+  for (int i = 0; i < found; ++i) {
+    std::string ssid(WiFi.SSID(i).c_str());
+    if (ssid.empty()) continue;
+    if (std::find(seen.begin(), seen.end(), ssid) != seen.end()) continue;  // dedupe APs
+    seen.push_back(ssid);
+    arr.add(ssid);
+  }
+  WiFi.scanDelete();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleConnect() {
+  touchActivity();
+  std::string ssid = server_.hasArg("ssid") ? server_.arg("ssid").c_str() : "";
+  if (ssid.empty()) {
+    server_.send(400, "application/json", "{\"ok\":false,\"message\":\"SSID required\"}");
+    return;
+  }
+  std::string password = server_.hasArg("password") ? server_.arg("password").c_str() : "";
+
+  pendingSsid_ = ssid;
+  pendingPassword_ = password;
+  // STA-only connect attempt — the AP interface (WIFI_AP_STA) stays up the
+  // whole time so the portal itself never drops.
+  WiFi.begin(pendingSsid_.c_str(), pendingPassword_.empty() ? nullptr : pendingPassword_.c_str());
+  wifiConnectState_ = WifiConnectState::kConnecting;
+  wifiConnectStartMs_ = millis();
+
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void SetupFlow::handleStatus() {
+  touchActivity();
+  const char* wifiStateStr = "idle";
+  switch (wifiConnectState_) {
+    case WifiConnectState::kIdle: wifiStateStr = "idle"; break;
+    case WifiConnectState::kConnecting: wifiStateStr = "connecting"; break;
+    case WifiConnectState::kConnected: wifiStateStr = "connected"; break;
+    case WifiConnectState::kFailed: wifiStateStr = "failed"; break;
+  }
+
+  JsonDocument doc;
+  doc["wifiState"] = wifiStateStr;
+  doc["apiKeySet"] = !configStore_.apiKey().empty();
+  doc["stopSet"] = !configStore_.stopId().empty();
+  doc["provisioned"] = configStore_.isProvisioned();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleApiKey() {
+  touchActivity();
+  std::string key = server_.hasArg("key") ? server_.arg("key").c_str() : "";
+  if (key.empty()) {
+    server_.send(200, "application/json", "{\"ok\":false,\"message\":\"The key can't be empty.\"}");
+    return;
+  }
+
+  apiClient_.setApiKey(key);
+  NearbyStopsParams params;
+  params.maxDistanceMeters = 500;
+  NearbyStopsResponse response;
+  bool ok = apiClient_.nearbyStops(kKeyCheckLat, kKeyCheckLon, params, response);
+
+  JsonDocument doc;
+  if (ok) {
+    configStore_.setApiKey(key);
+    // Never show the full key anywhere (root CLAUDE.md's "truncate to the
+    // last few characters" guardrail) — a short key just shows fully
+    // masked rather than falling back to printing it whole.
+    std::string suffix = key.size() > 4 ? ("..." + key.substr(key.size() - 4)) : "(hidden)";
+    doc["ok"] = true;
+    doc["keySuffix"] = suffix;
+  } else {
+    doc["ok"] = false;
+    doc["message"] = "Key rejected, or offline. A freshly issued key can take a moment to propagate.";
+  }
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleStopSearch() {
+  touchActivity();
+  std::string latText = server_.hasArg("lat") ? server_.arg("lat").c_str() : "";
+  std::string lonText = server_.hasArg("lon") ? server_.arg("lon").c_str() : "";
+  std::string query = server_.hasArg("query") ? server_.arg("query").c_str() : "";
+
+  double lat = 0.0;
+  double lon = 0.0;
+  bool validCoords = parseDouble(latText, lat) && parseDouble(lonText, lon) && lat >= -90.0 &&
+                      lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
+  if (!validCoords) {
+    server_.send(200, "application/json",
+                 "{\"ok\":false,\"message\":\"Enter a valid latitude (-90 to 90) and longitude (-180 to "
+                 "180).\"}");
+    return;
+  }
+
+  SearchStopsParams params;
+  params.maxNumResults = 20;
+  SearchStopsResponse response;
+  bool ok = apiClient_.searchStops(lat, lon, query, params, response);
+
+  JsonDocument doc;
+  if (!ok || response.results.empty()) {
+    doc["ok"] = false;
+    doc["message"] = "No matching stops near that area. Check the coordinates/spelling and try again.";
+    std::string body;
+    serializeJson(doc, body);
+    server_.send(200, "application/json", body.c_str());
+    return;
+  }
+
+  lastStopResults_ = response.results;
+  doc["ok"] = true;
+  JsonArray results = doc["results"].to<JsonArray>();
+  for (size_t i = 0; i < lastStopResults_.size(); ++i) {
+    JsonObject item = results.add<JsonObject>();
+    item["index"] = static_cast<int>(i);
+    item["name"] = lastStopResults_[i].stopName;
+    item["distanceMeters"] = lastStopResults_[i].distanceMeters;
+  }
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleStopSelect() {
+  touchActivity();
+  std::string indexText = server_.hasArg("index") ? server_.arg("index").c_str() : "";
+  // strtol, not atoi: atoi silently returns 0 for non-numeric input, which
+  // would look like a valid "first result" pick instead of a parse failure.
+  int index = -1;
+  if (!indexText.empty()) {
+    const char* start = indexText.c_str();
+    char* end = nullptr;
+    long parsed = strtol(start, &end, 10);
+    if (end != start && *end == '\0' && parsed >= 0 && parsed <= INT_MAX) {
+      index = static_cast<int>(parsed);
+    }
+  }
+  if (index < 0 || static_cast<size_t>(index) >= lastStopResults_.size()) {
+    server_.send(200, "application/json", "{\"ok\":false,\"message\":\"Search again and pick a stop.\"}");
+    return;
+  }
+
+  const SearchStopResult& chosen = lastStopResults_[static_cast<size_t>(index)];
+  configStore_.setStopId(chosen.globalStopId);
+
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["stopName"] = chosen.stopName;
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleCaptiveRedirect() {
+  touchActivity();
+  std::string location = "http://" + std::string(WiFi.softAPIP().toString().c_str()) + "/";
+  server_.sendHeader("Location", location.c_str(), true);
+  server_.send(302, "text/plain", "");
+}
+
+void SetupFlow::handleNotFound() {
+  touchActivity();
+  std::string location = "http://" + std::string(WiFi.softAPIP().toString().c_str()) + "/";
+  server_.sendHeader("Location", location.c_str(), true);
+  server_.send(302, "text/plain", "");
+}
 
 bool SetupFlow::runFirstTimeSetup() {
   if (configStore_.isProvisioned()) return true;
 
-  renderEngine_.renderSetupPrompt("Setup", "Let's get your board set up.");
-  delay(1000);
+  renderEngine_.renderSetupPrompt(
+      "Setup",
+      std::string("Connect your phone to Wi-Fi\nnetwork \"") + kApSsid +
+          "\",\nthen visit http://192.168.4.1");
 
-  if (!pairBleKeyboard(renderEngine_)) return configStore_.isProvisioned();
+  startPortal();
 
-  if (!ensureWifiConnected(renderEngine_, configStore_)) return configStore_.isProvisioned();
-
-  if (configStore_.apiKey().empty()) {
-    if (!promptAndValidateApiKey(renderEngine_, apiClient_, configStore_)) {
-      return configStore_.isProvisioned();
-    }
-  } else {
-    // Resuming with a key already saved from a prior attempt — reuse it
-    // rather than asking again; main.cpp constructed apiClient_ with
-    // whatever configStore_.apiKey() held at boot, which is this value.
+  // Resume support: reuse already-saved values without re-asking. Wi-Fi
+  // credentials may already be stored (a resume after an interrupted setup,
+  // or a later re-run — this device has no settings UI beyond first-run
+  // setup) — try them in the background rather than making a returning user
+  // re-enter a network that still works; the portal stays up regardless, so
+  // falling back to the web step if this fails costs nothing.
+  std::string savedSsid = configStore_.wifiSsid();
+  if (!savedSsid.empty()) {
+    pendingSsid_ = savedSsid;
+    pendingPassword_ = configStore_.wifiPassword();
+    WiFi.begin(pendingSsid_.c_str(), pendingPassword_.empty() ? nullptr : pendingPassword_.c_str());
+    wifiConnectState_ = WifiConnectState::kConnecting;
+    wifiConnectStartMs_ = millis();
+  }
+  if (!configStore_.apiKey().empty()) {
+    // main.cpp constructed apiClient_ with whatever configStore_.apiKey()
+    // held at boot, which is this same value — re-set defensively in case a
+    // caller ever changes that.
     apiClient_.setApiKey(configStore_.apiKey());
   }
 
-  if (configStore_.stopId().empty()) {
-    if (!pickStop(renderEngine_, apiClient_, configStore_)) return configStore_.isProvisioned();
+  uint32_t provisionedAtMs = 0;
+  while (true) {
+    dnsServer_.processNextRequest();
+    server_.handleClient();
+    pollWifiConnectState();
+
+    if (configStore_.isProvisioned()) {
+      if (provisionedAtMs == 0) {
+        provisionedAtMs = millis();
+        renderEngine_.renderSetupPrompt("Setup complete", "Your board is ready.");
+      } else if (millis() - provisionedAtMs > kProvisionedLingerMs) {
+        break;
+      }
+    } else if (millis() - lastActivityMs_ > kSetupIdleTimeoutMs) {
+      renderEngine_.renderSetupPrompt("Setup paused",
+                                       "No activity on the setup page.\nWill retry on next wake.");
+      break;
+    }
+
+    delay(10);
   }
 
-  renderEngine_.renderSetupPrompt("Setup complete", "Your board is ready.");
-  delay(1200);
+  stopPortal();
   return configStore_.isProvisioned();
 }
 
