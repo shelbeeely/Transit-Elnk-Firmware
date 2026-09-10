@@ -4,3 +4,6 @@
 .vscode/
 *.o
 *.bin
+
+# Local agent worktrees (harness-managed, not project source)
+.claude/worktrees/
