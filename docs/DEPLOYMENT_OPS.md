@@ -90,6 +90,40 @@ tradeoff visible to a user), the firmware should surface it directly —
 e.g. showing an estimated battery-life impact next to the refresh-interval
 setting during setup, rather than picking a number silently.
 
+## Transit API Terms of Service — compliance requirements
+
+Verbatim reminder from Transit when API access is granted (transitapp.com/apis).
+These are binding on whoever operates a device/key, not just advisory:
+
+- **No third-party key sharing**: don't give the API key to any third party.
+  The firmware already satisfies this structurally — each device stores its
+  own key in its own NVS, entered by its own operator during setup; there is
+  no shared backend, proxy, or multi-device key pooling anywhere in this
+  design, and none should be added.
+- **10 business days' notice before going public**: before making public any
+  tool/service relying on this API or its data, email apis@transitapp.com at
+  least 10 business days ahead, and be ready to share integration details
+  Transit reasonably requests. This applies to *this project* going public
+  (a release, a blog post, a product listing) — **the maintainer's
+  responsibility, not something the firmware can automate**. Flagging here so
+  it isn't missed before any public launch.
+- **"Powered by Transit" logo, visibly displayed in the main interface**:
+  required on-device, not optional. The departure board (the device's main
+  interface) must show a "Powered by Transit" attribution — implemented as a
+  small always-visible footer/label in `RenderEngine::renderDepartureBoard`.
+  Transit provides an actual logo asset ("available here" in their ToS
+  reminder — get the real file/link from whoever received the API key); once
+  obtained, rasterize it the same way route icons are handled
+  (`docs/ASSETS_ICONS.md`'s pipeline: convert once, cache as a bitmap, no
+  runtime SVG rendering) and swap it in for the interim text label.
+- **Marketing/press review**: share any press release, marketing material, or
+  public communication mentioning Transit, the API, or Transit's trademarks
+  with apis@transitapp.com for approval *before* publishing. Maintainer
+  responsibility — flagged here for the same reason as the 10-day notice.
+- **No SLA on the free tier**: no technical support or personalized guidance
+  included free — informational, not a blocker. Transit's partnerships team
+  (apis@transitapp.com) handles paid-tier requests for more calls/capabilities.
+
 ## Deployment mechanism difference (context, not firmware-relevant)
 
 `DEPLOYING.md` walks through forking Transit-TV to a Railway/Render/Fly.io/
