@@ -1,17 +1,22 @@
 // Transit-Elnk-Firmware — departure-board layout and drawing.
 //
-// Draws through FreeInkUI's native, dependency-free DrawTarget
-// (freeink::ui::DisplayTarget, FreeInkUIDisplayTarget.h) over
-// EInkDisplay::getFrameBuffer() — the same primitive Free-Ink/inkdeck's
+// Draws through FreeInkUI's native, dependency-free freeink::ui::DrawTarget
+// interface (FreeInkUICore.h) -- the same primitive Free-Ink/inkdeck's
 // screens.cpp uses for both text (target.text(rect, str, style)) and icon
 // compositing (target.bitmap(rect, ref, mode, tintPaint)). No custom font or
-// bitmap pipeline: text uses FreeInkUI's bundled Noto Sans bitmap font, and
-// icon tinting reuses the target's own ordered-dither Paint/Color handling
-// (see the note on drawRouteBadge() below for why that's used instead of a
-// raw EInkDisplay::drawImage() call).
+// bitmap pipeline: text uses whatever BitmapFont the concrete DrawTarget was
+// set up with (FreeInkUI's bundled Noto Sans on the real hardware path), and
+// icon tinting reuses the target's own Paint/Color handling (see the note on
+// drawRouteBadge() below for why that's used instead of a raw bitmap blit).
+//
+// This module only ever talks to the abstract DrawTarget/FramePresenter
+// pair it's constructed with (render_engine.h) -- never EInkDisplay -- so it
+// has no hardware dependency and builds/tests under [env:native] as well as
+// [env:xteink_x4]. See render_engine.h's file comment for who constructs
+// which concrete DrawTarget/FramePresenter.
 //
 // This module is purely a renderer: it never touches input, so it draws
-// straight through a DisplayTarget without the Frame<N>/InteractionBuffer
+// straight through a DrawTarget without the Frame<N>/InteractionBuffer
 // machinery FreeInkUI's interactive components need.
 
 #include "transit/render_engine.h"
@@ -20,9 +25,6 @@
 #include <cstdio>
 #include <string>
 #include <time.h>
-
-#include <FreeInkUI.h>
-#include <FreeInkUIDisplayTarget.h>
 
 namespace transit {
 
@@ -165,9 +167,7 @@ RouteBadge pickBadge(const DisplayShortName& name) {
   return badge;
 }
 
-void drawStatusHeader(fui::DisplayTarget& target, const BoardStatus& status) {
-  const int16_t screenW = target.logicalWidth();
-
+void drawStatusHeader(fui::DrawTarget& target, int16_t screenW, const BoardStatus& status) {
   // Battery glyph, right-aligned.
   constexpr int16_t kBatteryW = 26;
   constexpr int16_t kBatteryH = 13;
@@ -226,16 +226,12 @@ void drawStatusHeader(fui::DisplayTarget& target, const BoardStatus& status) {
   target.line(fui::Point{0, kHeaderHeight}, fui::Point{screenW, kHeaderHeight}, 1, fui::Paint::solid(fui::Color::Black));
 }
 
-// Route icon compositing. Uses DisplayTarget::bitmap() -- the exact
-// primitive inkdeck's screens.cpp uses to draw icons (target.bitmap(rect,
-// ref, mode, foregroundPaint)) -- rather than calling
-// EInkDisplay::drawImage() directly: drawImage()/drawImageTransparent() are
-// raw 1-bit overwrite/AND blits with no color argument at all, so getting
-// docs/ASSETS_ICONS.md's "tint the alpha mask as one of the panel's 4 grays"
-// out of them would mean hand-rolling the same ordered-dither compositing
-// DisplayTarget::bitmap() already does (and already uses for every other
-// gray fill/stroke/text draw in this file) -- see the PR description for
-// this judgment call.
+// Route icon compositing. Uses DrawTarget::bitmap() -- the exact primitive
+// inkdeck's screens.cpp uses to draw icons (target.bitmap(rect, ref, mode,
+// foregroundPaint)) -- rather than a raw 1-bit overwrite/AND blit: that
+// would mean hand-rolling docs/ASSETS_ICONS.md's "tint the alpha mask as one
+// of the panel's 4 grays" ourselves (and already-dithered gray fill/stroke/
+// text draws in this file rely on the same DrawTarget-level color handling).
 //
 // Returns true when an actual icon glyph was drawn (so the caller knows
 // whether line 1 still needs a route-label caption next to it), false when
@@ -243,7 +239,7 @@ void drawStatusHeader(fui::DisplayTarget& target, const BoardStatus& status) {
 // forceLabelFallback -- see the gray-collision handling in
 // renderDepartureBoard()) -- the fallback badge already carries the route's
 // identifying text, so nothing else should repeat it.
-bool drawRouteBadge(fui::DisplayTarget& target, IconCache& iconCache, const fui::Rect& slot,
+bool drawRouteBadge(fui::DrawTarget& target, IconCache& iconCache, const fui::Rect& slot,
                     const DirectionBoard& dir, const RouteBadge& badge, bool forceLabelFallback) {
   const fui::Color tint = quantizeHexColor(dir.routeColor, fui::Color::Black);
 
@@ -272,7 +268,7 @@ bool drawRouteBadge(fui::DisplayTarget& target, IconCache& iconCache, const fui:
   return false;
 }
 
-void drawDirectionRow(fui::DisplayTarget& target, IconCache& iconCache, const fui::Rect& rowRect,
+void drawDirectionRow(fui::DrawTarget& target, IconCache& iconCache, const fui::Rect& rowRect,
                       const DirectionBoard& dir, int64_t nowEpoch, bool colorCollision) {
   const RouteBadge badge = pickBadge(dir.routeDisplayShortName);
   const fui::Rect iconSlot{rowRect.x, rowRect.y, kIconColumnWidth, rowRect.height};
@@ -335,49 +331,46 @@ void drawDirectionRow(fui::DisplayTarget& target, IconCache& iconCache, const fu
 // Shared by renderSetupPrompt()/renderSetupList(): a bold title plus a
 // divider. Returns the y-coordinate the caller's own content should start
 // at, below the divider.
-int16_t drawScreenHeader(fui::DisplayTarget& target, const std::string& title) {
+int16_t drawScreenHeader(fui::DrawTarget& target, int16_t screenW, const std::string& title) {
   fui::TextStyle titleStyle;
   titleStyle.bold = true;
   titleStyle.maxLines = 1;
-  const fui::Rect titleRect{kMargin, kMargin, static_cast<int16_t>(target.logicalWidth() - 2 * kMargin), 40};
+  const fui::Rect titleRect{kMargin, kMargin, static_cast<int16_t>(screenW - 2 * kMargin), 40};
   target.text(titleRect, title.c_str(), titleStyle);
 
   const int16_t dividerY = static_cast<int16_t>(kMargin + 44);
-  target.line(fui::Point{kMargin, dividerY}, fui::Point{static_cast<int16_t>(target.logicalWidth() - kMargin), dividerY},
-             1, fui::Paint::solid(fui::Color::Black));
+  target.line(fui::Point{kMargin, dividerY}, fui::Point{static_cast<int16_t>(screenW - kMargin), dividerY}, 1,
+             fui::Paint::solid(fui::Color::Black));
 
   return static_cast<int16_t>(kMargin + 56);
 }
 
 }  // namespace
 
-RenderEngine::RenderEngine(EInkDisplay& display, IconCache& iconCache)
-    : display_(display), iconCache_(iconCache) {}
+RenderEngine::RenderEngine(freeink::ui::DrawTarget& target, FramePresenter& presenter, IconCache& iconCache,
+                           int16_t screenWidth, int16_t screenHeight)
+    : target_(target),
+      presenter_(presenter),
+      iconCache_(iconCache),
+      screenWidth_(screenWidth),
+      screenHeight_(screenHeight) {}
 
 void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board, const BoardStatus& status) {
-  display_.clearScreen(0xFF);
+  target_.fill(fui::Rect{0, 0, screenWidth_, screenHeight_}, fui::Paint::solid(fui::Color::White));
 
-  // Explicit LandscapeCounterClockwise (native): the X4's panel is
-  // landscape-native (800x480), and this is a standing board, not a
-  // hand-held reader -- DisplayTarget's default orientation heuristic
-  // (auto-Portrait for a landscape-native panel, meant for e-readers held
-  // tall) would rotate the whole layout 90 degrees.
-  fui::DisplayTarget target(display_.getFrameBuffer(), display_.getDisplayWidth(), display_.getDisplayHeight(),
-                            display_.getDisplayWidthBytes(), fui::Orientation::LandscapeCounterClockwise);
-
-  drawStatusHeader(target, status);
+  drawStatusHeader(target_, screenWidth_, status);
 
   const int16_t bodyTop = static_cast<int16_t>(kHeaderHeight + 8);
-  const int16_t bodyBottom = static_cast<int16_t>(target.logicalHeight() - kMargin);
+  const int16_t bodyBottom = static_cast<int16_t>(screenHeight_ - kMargin);
   const int maxRows = std::max(0, (bodyBottom - bodyTop + kRowGap) / (kRowHeight + kRowGap));
 
   if (board.empty()) {
     fui::TextStyle empty;
     empty.align = fui::TextAlign::Center;
     empty.maxLines = 2;
-    const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(target.logicalWidth() - 2 * kMargin),
+    const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin),
                               static_cast<int16_t>(bodyBottom - bodyTop)};
-    target.text(emptyRect, "No departures to show.", empty);
+    target_.text(emptyRect, "No departures to show.", empty);
   } else {
     const int rowsToDraw = std::min<int>(maxRows, static_cast<int>(board.size()));
 
@@ -402,45 +395,41 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
         }
       }
       const fui::Rect rowRect{kMargin, static_cast<int16_t>(bodyTop + i * (kRowHeight + kRowGap)),
-                              static_cast<int16_t>(target.logicalWidth() - 2 * kMargin), kRowHeight};
-      drawDirectionRow(target, iconCache_, rowRect, board[i], status.lastUpdatedEpoch, collision);
+                              static_cast<int16_t>(screenWidth_ - 2 * kMargin), kRowHeight};
+      drawDirectionRow(target_, iconCache_, rowRect, board[i], status.lastUpdatedEpoch, collision);
     }
   }
 
-  display_.displayBuffer(EInkDisplay::FULL_REFRESH);
+  presenter_.present();
 }
 
 void RenderEngine::renderSetupPrompt(const std::string& title, const std::string& body) {
-  display_.clearScreen(0xFF);
-  fui::DisplayTarget target(display_.getFrameBuffer(), display_.getDisplayWidth(), display_.getDisplayHeight(),
-                            display_.getDisplayWidthBytes(), fui::Orientation::LandscapeCounterClockwise);
+  target_.fill(fui::Rect{0, 0, screenWidth_, screenHeight_}, fui::Paint::solid(fui::Color::White));
 
-  const int16_t bodyTop = drawScreenHeader(target, title);
+  const int16_t bodyTop = drawScreenHeader(target_, screenWidth_, title);
 
   fui::TextStyle bodyStyle;
   bodyStyle.maxLines = 10;
-  const fui::Rect bodyRect{kMargin, bodyTop, static_cast<int16_t>(target.logicalWidth() - 2 * kMargin),
-                           static_cast<int16_t>(target.logicalHeight() - kMargin - bodyTop)};
-  target.text(bodyRect, body.c_str(), bodyStyle);
+  const fui::Rect bodyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin),
+                           static_cast<int16_t>(screenHeight_ - kMargin - bodyTop)};
+  target_.text(bodyRect, body.c_str(), bodyStyle);
 
-  display_.displayBuffer(EInkDisplay::FULL_REFRESH);
+  presenter_.present();
 }
 
 void RenderEngine::renderSetupList(const std::string& title, const std::vector<std::string>& items,
                                    int selectedIndex) {
-  display_.clearScreen(0xFF);
-  fui::DisplayTarget target(display_.getFrameBuffer(), display_.getDisplayWidth(), display_.getDisplayHeight(),
-                            display_.getDisplayWidthBytes(), fui::Orientation::LandscapeCounterClockwise);
+  target_.fill(fui::Rect{0, 0, screenWidth_, screenHeight_}, fui::Paint::solid(fui::Color::White));
 
-  const int16_t listTop = drawScreenHeader(target, title);
+  const int16_t listTop = drawScreenHeader(target_, screenWidth_, title);
 
   constexpr int16_t kListRowHeight = 40;
-  const int16_t listBottom = static_cast<int16_t>(target.logicalHeight() - kMargin);
-  const fui::Rect listRect{kMargin, listTop, static_cast<int16_t>(target.logicalWidth() - 2 * kMargin),
+  const int16_t listBottom = static_cast<int16_t>(screenHeight_ - kMargin);
+  const fui::Rect listRect{kMargin, listTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin),
                            static_cast<int16_t>(listBottom - listTop)};
 
   if (items.empty()) {
-    display_.displayBuffer(EInkDisplay::FULL_REFRESH);
+    presenter_.present();
     return;
   }
 
@@ -458,13 +447,13 @@ void RenderEngine::renderSetupList(const std::string& title, const std::vector<s
     fui::TextStyle style;
     style.maxLines = 1;
     if (selected) {
-      target.fill(rowRect, fui::Paint::solid(fui::Color::Black));
+      target_.fill(rowRect, fui::Paint::solid(fui::Color::Black));
       style.color = fui::Color::White;
     }
-    target.text(rowRect.inset(fui::Insets{4, 4, 4, 8}), items[index].c_str(), style);
+    target_.text(rowRect.inset(fui::Insets{4, 4, 4, 8}), items[index].c_str(), style);
   }
 
-  display_.displayBuffer(EInkDisplay::FULL_REFRESH);
+  presenter_.present();
 }
 
 }  // namespace transit
