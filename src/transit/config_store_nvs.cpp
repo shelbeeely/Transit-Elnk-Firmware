@@ -2,8 +2,9 @@
 // — excluded from [env:native]'s build (see platformio.ini), since
 // Preferences.h isn't available there.
 //
-// Stub implementation — replaced by work unit 3 (config/state store).
-// Exists so the scaffold links and runs end to end before that unit lands.
+// Hardware-only: not exercised by [env:native] tests (see
+// test/test_config_store/test_main.cpp, which tests ConfigStore's logic
+// against an in-memory ConfigBackend test double instead).
 
 #include "transit/config_store.h"
 

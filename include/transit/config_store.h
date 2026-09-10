@@ -3,7 +3,9 @@
 // Transit-Elnk-Firmware — persisted configuration.
 //
 // Keys/types/defaults match docs/CONFIG_AND_STATE.md's "Firmware ConfigStore
-// (NVS) — proposed key mapping" table exactly. Backed by NVS via Arduino
+// (NVS) — proposed key mapping" table (see that doc's note below the table
+// for the handful of on-disk key names abbreviated to fit NVS's 15-character
+// key-name limit). Backed by NVS via Arduino
 // Preferences on [env:xteink_x4] (see src/transit/config_store.cpp, unit 3);
 // injectable via ConfigBackend so ConfigStore itself is unit-testable under
 // [env:native] against an in-memory backend.
