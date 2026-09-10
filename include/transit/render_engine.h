@@ -3,24 +3,35 @@
 // Transit-Elnk-Firmware — departure-board layout and drawing.
 //
 // Draws transit::DirectionBoard rows (already filtered/sorted/badged by
-// ui_logic) onto the Xteink X4 panel. Text via FreeInkUI's stock
-// DisplayTarget/ui::TextStyle (proven on this exact board by Free-Ink/
-// inkdeck's FreeInkUIDisplayTarget usage — no custom font pipeline); route
-// icons via EInkDisplay::drawImage with tinted route-color compositing per
-// docs/ASSETS_ICONS.md, using bitmaps supplied by icon_cache (unit 6).
+// ui_logic) through FreeInkUI's abstract freeink::ui::DrawTarget -- text via
+// DrawTarget::text()/measureText() (FreeInkUI's bundled Noto Sans bitmap
+// font, proven on this exact board by Free-Ink/inkdeck's FreeInkUIDisplayTarget
+// usage -- no custom font pipeline); route icons via DrawTarget::bitmap()
+// with tinted route-color compositing per docs/ASSETS_ICONS.md, using
+// bitmaps supplied by icon_cache (unit 6).
 //
-// Hardware-dependent (EInkDisplay) — only buildable/testable under
-// [env:xteink_x4], not [env:native].
+// Hardware-independent: RenderEngine only ever touches the DrawTarget and
+// FramePresenter references it's given, never EInkDisplay directly, so it
+// builds and is fully unit-testable under [env:native] as well as
+// [env:xteink_x4]. The [env:xteink_x4] path (src/main.cpp) constructs a real
+// freeink::ui::DisplayTarget bound to EInkDisplay::getFrameBuffer() plus a
+// FramePresenter that pushes via EInkDisplay::displayBuffer(); host-side
+// tests (test/test_render_snapshot) pass a recording DrawTarget that
+// rasterizes into an in-memory grayscale buffer and a no-op FramePresenter --
+// see test/test_render_snapshot/host_render_target.h.
 //
-// Frozen contract for the parallel work units: do not change the
-// RenderEngine constructor or renderDepartureBoard signature. Adding a
-// method is fine; note it in your PR description.
+// Frozen contract for the parallel work units: do not change
+// renderDepartureBoard's signature. The constructor was widened (host-side
+// PNG-snapshot testing unit) to take a DrawTarget&/FramePresenter& pair
+// instead of an EInkDisplay&; main.cpp's single construction call site was
+// updated to match -- see that PR for details. Adding a method is fine; note
+// it in your PR description.
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include <EInkDisplay.h>
+#include <FreeInkUICore.h>
 
 #include "transit/icon_cache.h"
 #include "transit/ui_logic.h"
@@ -36,9 +47,30 @@ struct BoardStatus {
   int64_t lastUpdatedEpoch = 0;
 };
 
+// Pushes a fully-drawn frame to the physical panel. RenderEngine only draws
+// into the DrawTarget it's given; presenting the result to hardware is a
+// separate concern kept behind this tiny interface so RenderEngine itself
+// never depends on EInkDisplay (see the file comment above). The real
+// implementation (main.cpp) wraps EInkDisplay::displayBuffer(FULL_REFRESH);
+// host-side tests pass a no-op/recording stub.
+class FramePresenter {
+ public:
+  virtual ~FramePresenter() = default;
+  virtual void present() = 0;
+};
+
 class RenderEngine {
  public:
-  explicit RenderEngine(EInkDisplay& display, IconCache& iconCache);
+  // screenWidth/screenHeight are target's LOGICAL drawing-surface dimensions
+  // (i.e. what a full-screen target.fill(Rect{0, 0, screenWidth, screenHeight}, ...)
+  // covers). DrawTarget itself exposes no width/height accessor -- only the
+  // concrete freeink::ui::DisplayTarget does (logicalWidth()/logicalHeight())
+  // -- so the caller supplies them explicitly; both default to the X4 panel's
+  // native 800x480, drawn with Orientation::LandscapeCounterClockwise
+  // (main.cpp's construction), so no caller of the real hardware path needs
+  // to pass them.
+  explicit RenderEngine(freeink::ui::DrawTarget& target, FramePresenter& presenter, IconCache& iconCache,
+                        int16_t screenWidth = 800, int16_t screenHeight = 480);
 
   // Lays out and draws one full departure-board frame (status header + one
   // row per DirectionBoard entry, each row's departures rendered per
@@ -54,8 +86,11 @@ class RenderEngine {
                        int selectedIndex);
 
  private:
-  EInkDisplay& display_;
+  freeink::ui::DrawTarget& target_;
+  FramePresenter& presenter_;
   IconCache& iconCache_;
+  int16_t screenWidth_;
+  int16_t screenHeight_;
 };
 
 }  // namespace transit

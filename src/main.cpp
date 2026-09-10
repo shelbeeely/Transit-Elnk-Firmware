@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
+#include <FreeInkUIDisplayTarget.h>
 #include <PowerManager.h>
 #include <WiFi.h>
 #include <time.h>
@@ -32,6 +33,21 @@ using namespace transit;
 
 namespace {
 
+namespace fui = freeink::ui;
+
+// Real-hardware FramePresenter (render_engine.h): pushes whatever
+// RenderEngine just drew into EInkDisplay's framebuffer out to the physical
+// panel. The only place in this firmware where RenderEngine's drawing
+// touches actual hardware -- see render_engine.h's file comment.
+class EInkDisplayPresenter : public FramePresenter {
+ public:
+  explicit EInkDisplayPresenter(EInkDisplay& display) : display_(display) {}
+  void present() override { display_.displayBuffer(EInkDisplay::FULL_REFRESH); }
+
+ private:
+  EInkDisplay& display_;
+};
+
 // Global objects with trivial constructors only (no NVS/network/display
 // hardware touched until begin()/setup(), matching the Free-Ink ecosystem's
 // own convention of file-scope subsystem objects wired up inside setup()).
@@ -40,7 +56,6 @@ NvsConfigBackend g_configBackend;
 ConfigStore g_configStore(g_configBackend);
 WifiHttpTransport g_httpTransport;
 IconCache g_iconCache(g_httpTransport);
-RenderEngine g_renderEngine(g_display, g_iconCache);
 
 bool connectWifi(const std::string& ssid, const std::string& password) {
   WiFi.mode(WIFI_STA);
@@ -82,13 +97,28 @@ void setup() {
 
   g_display.begin();
 
+  // displayTarget/presenter/renderEngine are local, not global, for the same
+  // reason apiClient below is: they read real hardware state
+  // (g_display.getFrameBuffer() et al.) at construction, which must happen
+  // after g_display.begin() above, not at static-init time. Explicit
+  // LandscapeCounterClockwise (native): the X4's panel is landscape-native
+  // (800x480), and this is a standing board, not a hand-held reader --
+  // DisplayTarget's default orientation heuristic (auto-Portrait for a
+  // landscape-native panel, meant for e-readers held tall) would rotate the
+  // whole layout 90 degrees.
+  fui::DisplayTarget displayTarget(g_display.getFrameBuffer(), g_display.getDisplayWidth(),
+                                   g_display.getDisplayHeight(), g_display.getDisplayWidthBytes(),
+                                   fui::Orientation::LandscapeCounterClockwise);
+  EInkDisplayPresenter presenter(g_display);
+  RenderEngine renderEngine(displayTarget, presenter, g_iconCache);
+
   // TransitApiClient is local, not global: it reads the (possibly still
   // empty, pre-setup) API key at construction, which must happen after
   // board/NVS bring-up above, not at static-init time.
   TransitApiClient apiClient(g_httpTransport, g_configStore.apiKey());
 
   if (!g_configStore.isProvisioned()) {
-    SetupFlow setupFlow(g_configStore, apiClient, g_renderEngine);
+    SetupFlow setupFlow(g_configStore, apiClient, renderEngine);
     setupFlow.runFirstTimeSetup();
   }
 
@@ -135,7 +165,7 @@ void setup() {
   uiSettings.routeOrder = g_configStore.routeOrder();
 
   std::vector<DirectionBoard> board = buildDepartureBoard(routes, uiSettings, nowEpoch);
-  g_renderEngine.renderDepartureBoard(board, status);
+  renderEngine.renderDepartureBoard(board, status);
 
   SleepWindow sleepWindow;
   int startMin = g_configStore.sleepWindowStartMin();
