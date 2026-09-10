@@ -24,7 +24,9 @@
 // in your PR description.
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 #include "transit/api_client.h"
 
@@ -54,7 +56,19 @@ class IconCache {
   IconBitmap getIconBitmap(const std::string& imageSlug, uint16_t sizePx);
 
  private:
+  // Owns the rasterized bytes an IconBitmap returned above points into, so
+  // the pointer stays valid for the cache's (and thus this IconCache
+  // instance's) lifetime. In-memory only: one wake-render-sleep cycle per
+  // boot doesn't need this to survive deep sleep, so there's no flash/LittleFS
+  // persistence here (see icon_cache.cpp's file comment for that tradeoff).
+  struct CachedBitmap {
+    std::vector<uint8_t> bytes;  // empty = fetch/rasterize failed, cached as such
+    uint16_t widthPx = 0;
+    uint16_t heightPx = 0;
+  };
+
   HttpTransport& transport_;
+  std::map<std::string, CachedBitmap> cache_;  // key: "<imageSlug>|<sizePx>"
 };
 
 }  // namespace transit
