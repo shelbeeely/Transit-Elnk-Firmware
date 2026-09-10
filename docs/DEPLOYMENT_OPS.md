@@ -108,14 +108,17 @@ These are binding on whoever operates a device/key, not just advisory:
   responsibility, not something the firmware can automate**. Flagging here so
   it isn't missed before any public launch.
 - **"Powered by Transit" logo, visibly displayed in the main interface**:
-  required on-device, not optional. The departure board (the device's main
-  interface) must show a "Powered by Transit" attribution — implemented as a
-  small always-visible footer/label in `RenderEngine::renderDepartureBoard`.
-  Transit provides an actual logo asset ("available here" in their ToS
-  reminder — get the real file/link from whoever received the API key); once
-  obtained, rasterize it the same way route icons are handled
-  (`docs/ASSETS_ICONS.md`'s pipeline: convert once, cache as a bitmap, no
-  runtime SVG rendering) and swap it in for the interim text label.
+  required on-device, not optional. **Done**: the departure board (the
+  device's main interface) shows the real Transit badge as a small
+  always-visible footer in `RenderEngine::renderDepartureBoard`, drawn from
+  `include/transit/powered_by_transit_badge.h`. That header was generated
+  from Transit's official EN badge kit (`transit-api-badge@3x.png`, from the
+  asset link in Transit's ToS reminder, obtained directly by the project
+  maintainer) — resized to 96x32 and thresholded to a 1-bit mask, rasterized
+  the same way route icons are handled (`docs/ASSETS_ICONS.md`'s pipeline:
+  convert once, cache as a bitmap, no runtime SVG rendering). See that
+  header's own comment for exact regeneration steps if the source asset or
+  target size ever changes.
 - **Marketing/press review**: share any press release, marketing material, or
   public communication mentioning Transit, the API, or Transit's trademarks
   with apis@transitapp.com for approval *before* publishing. Maintainer

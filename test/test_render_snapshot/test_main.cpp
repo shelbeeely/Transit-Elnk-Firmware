@@ -210,12 +210,11 @@ void test_departure_board_footer_is_visible_and_does_not_overlap_rows() {
   }
   TEST_ASSERT_TRUE_MESSAGE(gapRowAllWhite, "expected a blank gap between the departure rows and the footer");
 
-  // The footer text itself should actually paint ink somewhere near the
+  // The footer badge itself should actually paint ink somewhere near the
   // bottom edge (not just reserve blank space for it). The band is
-  // deliberately generous (well beyond one text line's worth of pixels) so
-  // a modest future tweak to the footer's padding/line height doesn't make
-  // this assertion stale -- it only needs "near the bottom edge", not an
-  // exact row.
+  // deliberately generous (well beyond the badge's own height) so a modest
+  // future tweak to the footer's padding/badge size doesn't make this
+  // assertion stale -- it only needs "near the bottom edge", not an exact row.
   bool footerBandHasInk = false;
   for (int16_t y = static_cast<int16_t>(h - 60); y < h && !footerBandHasInk; ++y) {
     for (int16_t x = 0; x < w; ++x) {
@@ -225,7 +224,7 @@ void test_departure_board_footer_is_visible_and_does_not_overlap_rows() {
       }
     }
   }
-  TEST_ASSERT_TRUE_MESSAGE(footerBandHasInk, "expected \"Powered by Transit\" footer text near the bottom edge");
+  TEST_ASSERT_TRUE_MESSAGE(footerBandHasInk, "expected \"Powered by Transit\" footer badge near the bottom edge");
 }
 
 void test_departure_board_empty_shows_placeholder_text() {
