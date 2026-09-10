@@ -8,6 +8,8 @@ namespace transit {
 TransitApiClient::TransitApiClient(HttpTransport& transport, std::string apiKey)
     : transport_(transport), apiKey_(std::move(apiKey)) {}
 
+void TransitApiClient::setApiKey(std::string apiKey) { apiKey_ = std::move(apiKey); }
+
 bool TransitApiClient::nearbyRoutes(double /*lat*/, double /*lon*/,
                                      const NearbyRoutesParams& /*params*/,
                                      NearbyRoutesResponse& out) {

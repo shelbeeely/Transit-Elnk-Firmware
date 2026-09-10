@@ -80,6 +80,13 @@ class TransitApiClient {
  public:
   TransitApiClient(HttpTransport& transport, std::string apiKey);
 
+  // Updates the key used by subsequent calls. Needed because main.cpp
+  // constructs TransitApiClient before the first-run setup flow may have
+  // collected a fresh key (setup_flow.h's runFirstTimeSetup) — call this
+  // once the user has entered/confirmed one, then validate/search with the
+  // same client instance instead of constructing a second one.
+  void setApiKey(std::string apiKey);
+
   // GET /v4/public/nearby_routes
   bool nearbyRoutes(double lat, double lon, const NearbyRoutesParams& params,
                      NearbyRoutesResponse& out);
