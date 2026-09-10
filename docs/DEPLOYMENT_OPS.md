@@ -37,18 +37,46 @@ of an always-on browser tab making it more visible.
 ## What actually fits the free tier
 
 1,500 calls/month ÷ 30 days ÷ 24 hours ≈ **1 call every ~29 minutes**
-sustained continuously. A firmware default of **15–30 minute** polling:
+sustained continuously — that's the loosest bound the free tier allows.
+The firmware's chosen default sits well inside it rather than riding the
+line:
 
-- 15 min → ~2,880 calls/month (over the free cap — needs a paid key for
-  strictly continuous 24/7 operation, or deep-sleep hours overnight to stay
-  under it)
-- 30 min → ~1,440 calls/month (fits comfortably under the free cap)
+| Cadence | Calls/month (24/7) | Headroom vs. 1,500 cap |
+|---|---|---|
+| **60 min (chosen default, awake)** | ~720 | ~2.1x |
+| 30 min | ~1,440 | ~1.04x — essentially no margin for setup calls, retries, or clock drift |
+| 15 min | ~2,880 | Over the cap — needs a paid key |
 
 **Recommendation carried into `CONFIG_AND_STATE.md`'s `refresh_interval_min`
-setting**: default to 30 minutes (free-tier-safe out of the box), let a
-user with a paid key dial it down. Never default to anything resembling the
-web apps' 20–30 **second** cadence — that was only ever viable because
-neither existing app is rate-limit-aware or battery-constrained.
+setting**: default to **60 minutes**, treated as the *minimum* interval —
+not a target to poll faster than absent a reason to. A user with a paid key
+can dial it down; the firmware should not tempt a free-tier user toward
+30 minutes just because the math technically allows it, since that leaves
+almost no room for the setup flow's own validation call (root `CLAUDE.md`,
+step 4) or an occasional retry without tipping over the cap. Never default
+to anything resembling the web apps' 20–30 **second** cadence — that was
+only ever viable because neither existing app is rate-limit-aware or
+battery-constrained.
+
+### Sleeping longer than the base interval
+
+The 60-minute figure is the cadence while the device is in normal
+awake/display use. When the device is otherwise asleep — a configured quiet
+window (e.g. overnight, when no one is reading the panel) or a
+lower-power/away mode the user selects — the firmware should stretch the
+interval further rather than keep polling on the same schedule:
+
+- A sleep-window multiplier (e.g. 2–4x the base interval, or a fixed
+  "don't poll between HH:MM and HH:MM" range) cuts both API calls and
+  Wi-Fi/redraw wake cycles during hours nobody's looking — the free tier
+  gets more headroom for exactly the same reason the battery does.
+- This is a natural fit for `PowerScheduler`'s fetch → render → deep-sleep →
+  wake loop: the *wake* interval itself is what varies (60 min baseline,
+  longer inside a sleep window), not just how much work happens per wake.
+- Treat "how much longer while sleeping" as its own setting rather than a
+  hardcoded multiple — someone running the display in a 24-hour space (a
+  lobby, a shared kitchen) has no true "asleep" period at all, and the
+  default should not assume one.
 
 ## Battery vs. freshness is a real, user-facing tradeoff
 

@@ -18,10 +18,12 @@ for those.
 
 **Firmware implication:** neither existing behavior maps directly onto a
 battery-powered device — both assume constant power and a screen that
-repaints for free. The plan's answer (translate 20–30s polling into a
-user-configurable multi-minute interval, decoupled from any local
-countdown) is the right one; there is no "faithful port" of a 20-second
-poll loop onto a 2-week-battery e-ink device, full stop.
+repaints for free. The chosen answer (translate 20–30s polling into a
+user-configurable interval defaulting to **hourly**, stretched further
+during a configured sleep window, decoupled from any local countdown — see
+`DEPLOYMENT_OPS.md` and `CONFIG_AND_STATE.md`'s `refresh_interval_min`/
+`sleep_window_*`) is the right one; there is no "faithful port" of a
+20-second poll loop onto a 2-week-battery e-ink device, full stop.
 
 ## Departure window (cutoff for "upcoming")
 
