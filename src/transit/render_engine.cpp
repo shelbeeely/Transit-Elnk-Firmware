@@ -40,6 +40,11 @@ constexpr int16_t kRowGap = 8;
 constexpr int16_t kIconColumnWidth = 44;
 constexpr int16_t kLineGap = 4;
 constexpr int16_t kChipGap = 10;
+// Breathing room above/below the attribution strip's single text line (see
+// drawAttributionFooter() below); the strip's actual height is derived from
+// the target's real line height rather than a guessed pixel constant, since
+// that's the only way to know a glyph won't be clipped by the screen edge.
+constexpr int16_t kFooterPadding = 6;
 
 struct Rgb {
   uint8_t r = 0;
@@ -328,6 +333,34 @@ void drawDirectionRow(fui::DrawTarget& target, IconCache& iconCache, const fui::
   }
 }
 
+// Transit API ToS compliance (docs/DEPLOYMENT_OPS.md, "Transit API Terms of
+// Service -- compliance requirements"): the departure board -- this device's
+// main interface -- must always show a "Powered by Transit" attribution.
+// Plain text via the same target.text() path every other label in this file
+// uses is the interim implementation: Transit's ToS points to an actual
+// logo asset, but nobody on this project has obtained that file yet. Once
+// it's in hand, swap this for the real logo, rasterized the same way route
+// icons are (docs/ASSETS_ICONS.md's pipeline: convert once, cache as a
+// bitmap, no runtime SVG rendering), instead of this text label.
+void drawAttributionFooter(fui::DrawTarget& target, int16_t screenW, int16_t screenH, int16_t footerHeight) {
+  fui::TextStyle style;
+  style.align = fui::TextAlign::Center;
+  style.color = fui::Color::DarkGray;
+  style.maxLines = 1;
+  const fui::Rect rect{kMargin, static_cast<int16_t>(screenH - footerHeight),
+                       static_cast<int16_t>(screenW - 2 * kMargin), footerHeight};
+  target.text(rect, "Powered by Transit", style);
+}
+
+// Height of the attribution strip -- passed to drawAttributionFooter() and
+// reserved from the departure rows' body area: one text line at the
+// target's actual line height (never guessed -- see docs/ASSETS_ICONS.md's
+// same "ask the target, don't assume the font" approach for icon sizing)
+// plus a little padding so descenders aren't flush against the screen edge.
+int16_t attributionFooterHeight(const fui::DrawTarget& target) {
+  return static_cast<int16_t>(target.lineHeight(fui::TextStyle{}.font) + kFooterPadding);
+}
+
 // Shared by renderSetupPrompt()/renderSetupList(): a bold title plus a
 // divider. Returns the y-coordinate the caller's own content should start
 // at, below the divider.
@@ -360,8 +393,11 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
 
   drawStatusHeader(target_, screenWidth_, status);
 
+  const int16_t footerHeight = attributionFooterHeight(target_);
   const int16_t bodyTop = static_cast<int16_t>(kHeaderHeight + 8);
-  const int16_t bodyBottom = static_cast<int16_t>(screenHeight_ - kMargin);
+  // Reserve the footer strip (plus its own kMargin gap above it) below the
+  // last row so the attribution label is never crowded or covered.
+  const int16_t bodyBottom = static_cast<int16_t>(screenHeight_ - kMargin - footerHeight);
   const int maxRows = std::max(0, (bodyBottom - bodyTop + kRowGap) / (kRowHeight + kRowGap));
 
   if (board.empty()) {
@@ -399,6 +435,8 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
       drawDirectionRow(target_, iconCache_, rowRect, board[i], status.lastUpdatedEpoch, collision);
     }
   }
+
+  drawAttributionFooter(target_, screenWidth_, screenHeight_, footerHeight);
 
   presenter_.present();
 }

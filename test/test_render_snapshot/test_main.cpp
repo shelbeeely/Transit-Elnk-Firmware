@@ -176,6 +176,58 @@ void test_departure_board_snapshot_paints_a_nontrivial_frame() {
   TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board.png");
 }
 
+// Transit API ToS compliance (docs/DEPLOYMENT_OPS.md): renderDepartureBoard()
+// must always show a "Powered by Transit" attribution, small/unobtrusive but
+// genuinely visible -- not overlapping the departure rows above it. Checks
+// this directly against the rasterized pixels rather than just eyeballing
+// the PNG: a blank separating band just above the footer, and actual ink in
+// the footer band itself.
+void test_departure_board_footer_is_visible_and_does_not_overlap_rows() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  engine.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+
+  const std::vector<uint8_t>& pixels = target.pixels();
+  const int16_t w = target.width();
+  const int16_t h = target.height();
+
+  // makeSampleBoard()'s 3 rows (bodyTop=56, 74px rows, 8px gaps) end by
+  // y=294; the footer strip sits well below that. y=300 should be a blank
+  // separating band regardless -- if a future layout change let the footer
+  // creep upward into the rows (or a row grow down into the footer), this
+  // scanline would stop being all-white.
+  constexpr int16_t kGapY = 300;
+  bool gapRowAllWhite = true;
+  for (int16_t x = 0; x < w; ++x) {
+    if (pixels[static_cast<size_t>(kGapY) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) {
+      gapRowAllWhite = false;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(gapRowAllWhite, "expected a blank gap between the departure rows and the footer");
+
+  // The footer text itself should actually paint ink somewhere near the
+  // bottom edge (not just reserve blank space for it). The band is
+  // deliberately generous (well beyond one text line's worth of pixels) so
+  // a modest future tweak to the footer's padding/line height doesn't make
+  // this assertion stale -- it only needs "near the bottom edge", not an
+  // exact row.
+  bool footerBandHasInk = false;
+  for (int16_t y = static_cast<int16_t>(h - 60); y < h && !footerBandHasInk; ++y) {
+    for (int16_t x = 0; x < w; ++x) {
+      if (pixels[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) {
+        footerBandHasInk = true;
+        break;
+      }
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(footerBandHasInk, "expected \"Powered by Transit\" footer text near the bottom edge");
+}
+
 void test_departure_board_empty_shows_placeholder_text() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -231,6 +283,7 @@ void test_setup_list_snapshot_paints_a_nontrivial_frame() {
 int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_departure_board_snapshot_paints_a_nontrivial_frame);
+  RUN_TEST(test_departure_board_footer_is_visible_and_does_not_overlap_rows);
   RUN_TEST(test_departure_board_empty_shows_placeholder_text);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);
   RUN_TEST(test_setup_list_snapshot_paints_a_nontrivial_frame);
