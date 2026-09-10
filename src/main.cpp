@@ -100,7 +100,7 @@ void setup() {
 
   BoardStatus status;
   status.stopName = g_configStore.stopId();
-  status.batteryPercent = 100;  // TODO(unit 7): read via freeink::BatteryMonitor.
+  status.batteryPercent = readBatteryPercent();
 
   bool wifiOk = connectWifi(g_configStore.wifiSsid(), g_configStore.wifiPassword());
   status.wifiOk = wifiOk;
