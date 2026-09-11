@@ -7,3 +7,11 @@
 
 # Local agent worktrees (harness-managed, not project source)
 .claude/worktrees/
+
+# Local-dev-only secrets (root CLAUDE.md: the Transit API key is entered
+# on-device via the setup portal and stored in NVS, never compiled into
+# tracked source -- this covers the untracked local file CLAUDE.md
+# describes for pre-setup local development, should anyone create one).
+secrets.h
+*.secrets.h
+.env
