@@ -27,6 +27,21 @@ struct HttpResponse {
   int statusCode = 0;
   std::string body;
   bool transportOk = false;  // false = connection/DNS/TLS failure, no statusCode
+
+  // The last Location header seen while following redirects, empty when
+  // there were none. May be relative -- resolve it against the requested
+  // URL (captive_portal.h's resolveUrl()) before using it.
+  //
+  // Only captive_portal.h reads this, and it genuinely needs it: a portal
+  // answers a canary probe by redirecting to its own splash page, so the
+  // sign-in form's relative action has to be resolved against *that* URL,
+  // not against the canary's. Resolving against the canary would aim the
+  // login POST at connectivitycheck.gstatic.com. It also covers the case
+  // the transport can't follow at all (an http canary redirected to an
+  // https splash page, which needs a TLS client the plain-http request
+  // didn't set up): the location still comes back here, so the caller can
+  // reissue it as a fresh request that picks the right client.
+  std::string redirectLocation;
 };
 
 // Injected HTTP transport. One GET call per endpoint; the Transit API v4
@@ -36,6 +51,25 @@ class HttpTransport {
   virtual ~HttpTransport() = default;
   virtual HttpResponse get(const std::string& url,
                             const std::vector<std::pair<std::string, std::string>>& headers) = 0;
+
+  // Form POST, added for captive_portal.h's login submission -- nothing in
+  // the Transit API v4 surface needs it, which is why get() above stayed
+  // the only method for so long. Deliberately given a default
+  // implementation rather than made pure virtual: every existing transport
+  // (the real WifiHttpTransport, and the test fakes in test_api_client /
+  // test_render_snapshot / test_icon_cache) is GET-only and has no business
+  // growing a POST path it will never use. The default reports a transport
+  // failure, which callers already have to handle, so an unimplemented POST
+  // degrades to "the login attempt didn't work" rather than a crash or a
+  // silent success.
+  virtual HttpResponse post(const std::string& url,
+                             const std::vector<std::pair<std::string, std::string>>& headers,
+                             const std::string& body) {
+    (void)url;
+    (void)headers;
+    (void)body;
+    return HttpResponse{};
+  }
 };
 
 // Shared optional query params across nearby_routes/stop_departures

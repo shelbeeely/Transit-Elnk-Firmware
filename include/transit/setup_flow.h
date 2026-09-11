@@ -142,6 +142,19 @@ class SetupFlow {
   void handleGetPresets();
   void handleSetPresets();
 
+  // Bus Wi-Fi captive-portal auto-login (captive_portal.h, ConfigStore's
+  // busWifiSsid()/busWifiIdentity()/busPortalSubmitUrl()/
+  // busPortalFieldName()) -- settings-only, requireSettingsMode()-guarded
+  // like the handlers above. Four plain strings with no live validation
+  // behind them: unlike handleSetStaStop()'s stop-code lookup or
+  // handleApiKey()'s one-off API call, there is nothing to validate an
+  // SSID or a portal field name against without being on that network, so
+  // these save what they're given. A wrong value surfaces as the board
+  // simply not getting online on that network, which is the same outcome
+  // as not configuring it at all.
+  void handleGetBusWifi();
+  void handleSetBusWifi();
+
   // Explicit "the user reached the end of the settings flow" signal (POST
   // /settingsdone, called by the settings page's JS once it shows
   // step-done) -- see settingsFinished_'s comment on why this exists

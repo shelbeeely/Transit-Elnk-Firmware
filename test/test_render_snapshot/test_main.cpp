@@ -18,6 +18,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <sys/stat.h>
 
@@ -143,10 +144,27 @@ BoardStatus makeSampleStatus() {
   return status;
 }
 
-// Ensures .pio/test-output/render_snapshot/ exists (mkdir -p, one level at a
-// time since there's no guarantee any parent already exists) and returns the
-// path `name` should be written under.
+// Ensures the snapshot output directory exists (mkdir -p, one level at a
+// time since there's no guarantee any parent already exists) and returns
+// the path `name` should be written under.
+//
+// Defaults to .pio/test-output/render_snapshot/, which is gitignored --
+// an ordinary `pio test` run must never dirty the working tree. Set
+// SNAPSHOT_OUT_DIR to send them somewhere tracked instead; that's how
+// tools/refresh_screenshots.sh regenerates the PNGs committed under
+// docs/screenshots/ and referenced from the README.
 std::string snapshotPath(const std::string& name) {
+  const char* override = ::getenv("SNAPSHOT_OUT_DIR");
+  if (override != nullptr && override[0] != '\0') {
+    std::string dir = override;
+    // mkdir -p over the override path, so a nested directory that doesn't
+    // exist yet is created rather than silently swallowing every write.
+    for (size_t i = 1; i <= dir.size(); ++i) {
+      if (i == dir.size() || dir[i] == '/') ::mkdir(dir.substr(0, i).c_str(), 0755);
+    }
+    if (!dir.empty() && dir.back() != '/') dir += '/';
+    return dir + name;
+  }
   ::mkdir(".pio", 0755);
   ::mkdir(".pio/test-output", 0755);
   ::mkdir(".pio/test-output/render_snapshot", 0755);
@@ -365,9 +383,16 @@ void test_departure_board_with_preset_trips_shows_strip_above_footer() {
   // visually against a snapshot PNG while writing this test); real preset-
   // summary formatting (main.cpp, not yet wired) must avoid it too.
   BoardStatus status = makeSampleStatus();
+  // One urgent line and one fallback line, so this single frame covers both
+  // the leaveNow stroke treatment and the not-found message. The urgency
+  // belongs on the line with a real plan behind it: main.cpp's
+  // formatPresetSummaryLine() forces leaveNow=false whenever !plan.found,
+  // so an outlined "No upcoming trip found" is a combination the firmware
+  // never actually produces -- and this frame is committed to
+  // docs/screenshots/, so it has to show what the board really does.
   status.presetTrips = {
-      {"Home", "leave by 5:42p - 31 -> transfer ~5:58p -> 32", /*leaveNow=*/false},
-      {"Work", "No upcoming trip found", /*leaveNow=*/true},
+      {"Home", "leave by 5:42p - 31 -> transfer ~5:58p -> 32", /*leaveNow=*/true},
+      {"Work", "No upcoming trip found", /*leaveNow=*/false},
   };
   engine.renderDepartureBoard(makeSampleBoard(), status);
 
@@ -481,6 +506,151 @@ void test_leave_now_urgency_adds_visible_emphasis() {
                                           "an imminent departure's bold+stroke chip should add visible ink");
 }
 
+// --- Offline / cached-data treatment (offline_cache.h, time_keeper.h) -----
+
+// A board restored from the NVS cache must look like a normal board with a
+// staleness marker, not like a broken one: same rows, same chips, but the
+// header says "Offline" and "Cached 2h ago" instead of "Updated 14:32".
+void test_offline_cached_board_shows_a_stale_marker() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  BoardStatus status = makeSampleStatus();
+  status.wifiOk = false;
+  status.lastFetchFailed = true;
+  status.dataIsCached = true;
+  status.cachedAgeMin = 137;  // "Cached 2h ago"
+  status.clockIsApproximate = true;
+
+  engine.renderDepartureBoard(makeSampleBoard(), status);
+
+  TEST_ASSERT_EQUAL_INT(1, presenter.presentCount);
+  TEST_ASSERT_TRUE_MESSAGE(target.hasVisibleContent(2),
+                           "a cached board should still paint the full multi-tone layout");
+
+  const std::string path = snapshotPath("departure_board_offline_cached.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_offline_cached.png");
+}
+
+// The staleness marker has to actually reach the pixels. Rendering the same
+// board twice -- once fresh, once cached -- must produce different frames,
+// or the header treatment is only happening in the struct.
+void test_cached_header_differs_from_a_live_one() {
+  auto render = [](bool cached) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    if (cached) {
+      status.wifiOk = false;
+      status.lastFetchFailed = true;
+      status.dataIsCached = true;
+      status.cachedAgeMin = 137;
+    }
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(false) != render(true),
+                           "a cached board must be visually distinguishable from a live one");
+}
+
+// An approximate clock (time_keeper.h) is marked with a leading "~" so an
+// estimate is never shown as if it were the exact time.
+void test_approximate_clock_is_marked_in_the_header() {
+  auto render = [](bool approximate) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.clockIsApproximate = approximate;
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(false) != render(true),
+                           "an approximate clock must be marked distinctly from a synced one");
+}
+
+// Three genuinely different situations, three different messages. An empty
+// board because the stop is quiet is not the same as an empty board because
+// the cache aged out, which is not the same as having never had a cache.
+void test_empty_board_messages_distinguish_the_offline_cases() {
+  auto render = [](bool wifiOk, bool cached) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.wifiOk = wifiOk;
+    status.lastFetchFailed = !wifiOk;
+    status.dataIsCached = cached;
+    engine.renderDepartureBoard({}, status);
+    return target.pixels();
+  };
+
+  const auto online = render(true, false);
+  const auto offlineNoCache = render(false, false);
+  const auto offlineExpiredCache = render(false, true);
+
+  TEST_ASSERT_TRUE(online != offlineNoCache);
+  TEST_ASSERT_TRUE(offlineNoCache != offlineExpiredCache);
+}
+
+// Offline long enough that the approximate clock aged out: the cache is
+// still worth drawing, but its age is genuinely unknown and must not be
+// rounded down to "just now" (BoardStatus::cachedAgeMin's -1 convention).
+void test_cached_board_with_unknown_age_is_marked_unknown_not_fresh() {
+  auto render = [](int cachedAgeMin) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.wifiOk = false;
+    status.lastFetchFailed = true;
+    status.dataIsCached = true;
+    status.cachedAgeMin = cachedAgeMin;
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(-1) != render(0),
+                           "an unknown cache age must not render the same as a fresh one");
+}
+
+// Wi-Fi is up and only the API call failed (bad key, quota, a 5xx). That's
+// a different problem from being offline and must keep saying so, or the
+// header throws away the one diagnostic it can give.
+void test_fetch_failure_with_wifi_up_is_not_labelled_offline() {
+  auto render = [](bool wifiOk) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.wifiOk = wifiOk;
+    status.lastFetchFailed = true;
+    status.dataIsCached = true;
+    status.cachedAgeMin = 137;
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(true) != render(false),
+                           "a fetch failure with Wi-Fi up must read differently from being offline");
+}
+
 void test_setup_prompt_snapshot_paints_a_nontrivial_frame() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -530,6 +700,12 @@ int main(int argc, char** argv) {
   RUN_TEST(test_departure_board_with_preset_trips_shows_strip_above_footer);
   RUN_TEST(test_focus_mode_paints_a_nontrivial_frame);
   RUN_TEST(test_leave_now_urgency_adds_visible_emphasis);
+  RUN_TEST(test_offline_cached_board_shows_a_stale_marker);
+  RUN_TEST(test_cached_header_differs_from_a_live_one);
+  RUN_TEST(test_approximate_clock_is_marked_in_the_header);
+  RUN_TEST(test_empty_board_messages_distinguish_the_offline_cases);
+  RUN_TEST(test_cached_board_with_unknown_age_is_marked_unknown_not_fresh);
+  RUN_TEST(test_fetch_failure_with_wifi_up_is_not_labelled_offline);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);
   RUN_TEST(test_setup_list_snapshot_paints_a_nontrivial_frame);
   return UNITY_END();

@@ -325,8 +325,30 @@ when to transfer. Enter each leg in order; up to 3 legs per destination.</p>
 <div id="picker-host"></div>
 
 <button onclick="savePresets()">Save</button>
-<button onclick="finishSettings()">Skip</button>
+<button onclick="gotoBusWifi()">Skip</button>
 <div id="presets-msg" class="msg"></div>
+</section>
+
+<section id="step-buswifi">
+<p>Optional &mdash; an open Wi-Fi network the board should try when your home
+network isn't around (onboard transit Wi-Fi, for example). If that network
+shows a sign-in page, the board will fill in the email or phone below and
+submit it for you.</p>
+<label>Open network name (SSID)</label>
+<input id="bus-ssid" placeholder="leave blank to turn this off">
+<label>Email or phone to sign in with</label>
+<input id="bus-ident" placeholder="you@example.com">
+<p class="leg-summary">The board reads the sign-in page's own form to work
+out where to send this. Only fill in the two advanced fields below if that
+doesn't work &mdash; see docs/OFFLINE_AND_BUS_WIFI.md for how to read them
+off the real page once.</p>
+<label>Advanced: sign-in form URL (optional)</label>
+<input id="bus-url" placeholder="leave blank to detect automatically">
+<label>Advanced: form field name (optional)</label>
+<input id="bus-field" placeholder="e.g. email">
+<button onclick="saveBusWifi()">Save</button>
+<button onclick="finishSettings()">Skip</button>
+<div id="buswifi-msg" class="msg"></div>
 </section>
 
 <section id="step-done">
@@ -572,9 +594,37 @@ function savePresets(){
   setMsg('presets-msg','Saving...','');
   fetch('/setpresets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){return r.json();}).then(function(res){
-      if(res.ok){ finishSettings(); }
+      if(res.ok){ gotoBusWifi(); }
       else { setMsg('presets-msg',res.message||'Could not save.','err'); }
     }).catch(function(){ setMsg('presets-msg','Could not reach the board. Try again.','err'); });
+}
+
+// --- Bus Wi-Fi captive-portal auto-login -----------------------------------
+//
+// Unlike the preset legs above, these are four plain strings with no live
+// resolution behind them, so the current values CAN be prefilled and edited
+// in place -- no legsTouched-style guard is needed here.
+function gotoBusWifi(){
+  fetch('/getbuswifi').then(function(r){return r.json();}).then(function(s){
+    el('bus-ssid').value = s.ssid || '';
+    el('bus-ident').value = s.identity || '';
+    el('bus-url').value = s.submitUrl || '';
+    el('bus-field').value = s.fieldName || '';
+  }).catch(function(){});
+  showStep('step-buswifi');
+}
+
+function saveBusWifi(){
+  var payload = 'ssid='+encodeURIComponent(el('bus-ssid').value.trim())
+    +'&identity='+encodeURIComponent(el('bus-ident').value.trim())
+    +'&url='+encodeURIComponent(el('bus-url').value.trim())
+    +'&field='+encodeURIComponent(el('bus-field').value.trim());
+  setMsg('buswifi-msg','Saving...','');
+  fetch('/setbuswifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:payload})
+    .then(function(r){return r.json();}).then(function(res){
+      if(res.ok){ finishSettings(); }
+      else { setMsg('buswifi-msg',res.message||'Could not save.','err'); }
+    }).catch(function(){ setMsg('buswifi-msg','Could not reach the board. Try again.','err'); });
 }
 
 function finishSettings(){
@@ -617,6 +667,8 @@ void SetupFlow::startPortal() {
   server_.on("/legdirections", HTTP_POST, [this]() { handleLegDirections(); });
   server_.on("/getpresets", HTTP_GET, [this]() { handleGetPresets(); });
   server_.on("/setpresets", HTTP_POST, [this]() { handleSetPresets(); });
+  server_.on("/getbuswifi", HTTP_GET, [this]() { handleGetBusWifi(); });
+  server_.on("/setbuswifi", HTTP_POST, [this]() { handleSetBusWifi(); });
   server_.on("/settingsdone", HTTP_POST, [this]() { handleSettingsDone(); });
 
   // Common captive-portal probe URLs (Android/Chrome, iOS/macOS, Windows) —
@@ -688,6 +740,38 @@ void SetupFlow::handleSetOrientation() {
   std::string portraitArg = server_.hasArg("portrait") ? server_.arg("portrait").c_str() : "";
   bool portrait = portraitArg == "1" || portraitArg == "true";
   configStore_.setDisplayPortrait(portrait);
+  settingsSaved_ = true;
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void SetupFlow::handleGetBusWifi() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+  JsonDocument doc;
+  doc["ssid"] = configStore_.busWifiSsid();
+  // The identity is an email or phone number the user typed on this same
+  // page -- echoing it back is what makes the field editable rather than
+  // write-only, and it never leaves the board's own AP. Contrast the Wi-Fi
+  // password and API key, which this portal deliberately never reads back.
+  doc["identity"] = configStore_.busWifiIdentity();
+  doc["submitUrl"] = configStore_.busPortalSubmitUrl();
+  doc["fieldName"] = configStore_.busPortalFieldName();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleSetBusWifi() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+
+  // Trimmed client-side (see kSettingsPageHtml's saveBusWifi()), same
+  // convention as every other input on this page.
+  configStore_.setBusWifiSsid(server_.hasArg("ssid") ? server_.arg("ssid").c_str() : "");
+  configStore_.setBusWifiIdentity(server_.hasArg("identity") ? server_.arg("identity").c_str() : "");
+  configStore_.setBusPortalSubmitUrl(server_.hasArg("url") ? server_.arg("url").c_str() : "");
+  configStore_.setBusPortalFieldName(server_.hasArg("field") ? server_.arg("field").c_str() : "");
+
   settingsSaved_ = true;
   server_.send(200, "application/json", "{\"ok\":true}");
 }

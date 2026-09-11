@@ -85,6 +85,10 @@ field, since `API_KEY` isn't part of that particular sample); in production
 | `home_walk_min`, `work_walk_min` | n/a | int | **New setting.** Minutes to walk to that preset's first leg's boarding stop; default **0**. Subtracted from the first leg's departure time to compute the preset's "leave by" time |
 | `xfer_buf_min` | n/a | int | **New setting.** Shared minimum minutes between an estimated transfer arrival and the next leg's departure, applied to both presets; default **3** |
 | `focus_mode` | n/a — neither reference app has an equivalent reduced-clutter mode | bool | **New setting.** `false` (default) = the normal multi-route board; `true` = only the 1-2 soonest departures, drawn larger — an ADHD-friendly reduced-clutter option, settings-portal-only |
+| `bus_ssid` | n/a — both reference apps run on a mains-powered machine that never leaves its network | string | **New setting.** An open (no-password) Wi-Fi network to try when the configured home network isn't in range — onboard transit Wi-Fi. Empty (default) = the board never joins an open network at all. Settings-portal-only — see `docs/OFFLINE_AND_BUS_WIFI.md` |
+| `bus_ident` | n/a | string | **New setting.** The email or phone number submitted to that network's sign-in page. Stored in NVS alongside `wifi_pass`/`api_key` and, like them, never compiled into tracked source. Unlike those two the settings page *does* read it back so the field stays editable — it's an address the user typed on the board's own AP, not a credential |
+| `bus_form_url`, `bus_form_fld` | n/a | string | **New settings.** Optional manual overrides — the portal's submit URL and its identity field name — for a sign-in page `captive_portal.h`'s `discoverLoginForm()` can't read off the HTML (a JavaScript-built form, typically). Both empty (default) = rely on discovery, which handles an ordinary "type your email, press Connect" page. `docs/OFFLINE_AND_BUS_WIFI.md` covers how to capture them from one real page |
+| `cached_board` | n/a — neither reference app persists anything it fetched | string | **Not a user setting.** The last successfully fetched departure board, serialized by `offline_cache.h`, so a wake with no network redraws it marked stale instead of showing an empty screen. Written by `main.cpp` after every successful fetch, never by the settings portal. Capped at `kMaxCachedBoardBytes` (3500), under ESP-IDF's ~4000-byte limit on one NVS string value |
 
 NVS/Preferences key names are capped at 15 characters
 (`NVS_KEY_NAME_MAX_SIZE` is 16, including the null terminator) — a key
@@ -99,7 +103,23 @@ name is too long: `refresh_interval_min` → `refresh_int_min`,
 `portrait`, `sta_stop` is already short enough to use as-is. `hidden_routes[]` /
 `route_order[]` are each stored as one comma-joined string under
 `hidden_routes` / `route_order` respectively (NVS has no native array
-type) — see the accessors' comments in `config_store.cpp`.
+type) — see the accessors' comments in `config_store.cpp`. The bus Wi-Fi
+and cache keys added at the bottom of the table are written literally as
+shown; all five fit. A regression test
+(`test_config_store`'s `test_every_nvs_key_fits_the_fifteen_character_limit`)
+drives every setter once and asserts no key exceeds 15 characters, since a
+too-long name compiles fine and only fails at runtime on real hardware —
+invisible to both the host tests and the cross-compile otherwise.
+
+## State that is not in NVS — the approximate clock (RTC memory)
+
+One piece of persisted state deliberately lives outside `ConfigStore`:
+`time_keeper.h`'s approximate clock, held in ESP32 RTC memory
+(`RTC_DATA_ATTR`) rather than NVS. It's rewritten on **every** sleep, which
+would be flash wear for no benefit, and it's meaningless across a power
+cycle anyway — RTC memory not surviving a battery pull is exactly the
+"no clock carried over" signal the module wants. See
+`docs/OFFLINE_AND_BUS_WIFI.md`.
 
 Deliberately **not** ported: `data-filter` (dead parameter in the widget's
 own server code — passed through but never read by the actual API call),

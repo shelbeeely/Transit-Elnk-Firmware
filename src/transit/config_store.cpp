@@ -222,4 +222,28 @@ void ConfigStore::setTransferBufferMin(int minutes) { backend_.setInt("xfer_buf_
 bool ConfigStore::focusMode() { return backend_.getBool("focus_mode", false); }
 void ConfigStore::setFocusMode(bool enabled) { backend_.setBool("focus_mode", enabled); }
 
+// Bus Wi-Fi captive-portal auto-login. All four keys are under the 15-char
+// NVS limit as written (docs/CONFIG_AND_STATE.md's note on that cap), so
+// unlike refresh_interval_min et al. none of them needed abbreviating.
+std::string ConfigStore::busWifiSsid() { return backend_.getString("bus_ssid", ""); }
+void ConfigStore::setBusWifiSsid(const std::string& ssid) { backend_.setString("bus_ssid", ssid); }
+
+std::string ConfigStore::busWifiIdentity() { return backend_.getString("bus_ident", ""); }
+void ConfigStore::setBusWifiIdentity(const std::string& identity) {
+  backend_.setString("bus_ident", identity);
+}
+
+std::string ConfigStore::busPortalSubmitUrl() { return backend_.getString("bus_form_url", ""); }
+void ConfigStore::setBusPortalSubmitUrl(const std::string& url) {
+  backend_.setString("bus_form_url", url);
+}
+
+std::string ConfigStore::busPortalFieldName() { return backend_.getString("bus_form_fld", ""); }
+void ConfigStore::setBusPortalFieldName(const std::string& fieldName) {
+  backend_.setString("bus_form_fld", fieldName);
+}
+
+std::string ConfigStore::cachedBoard() { return backend_.getString("cached_board", ""); }
+void ConfigStore::setCachedBoard(const std::string& blob) { backend_.setString("cached_board", blob); }
+
 }  // namespace transit

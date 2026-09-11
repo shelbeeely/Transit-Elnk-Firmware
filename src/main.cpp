@@ -15,6 +15,7 @@
 #include <EInkDisplay.h>
 #include <FreeInkUIDisplayTarget.h>
 #include <WiFi.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include <algorithm>
@@ -23,13 +24,16 @@
 #include <vector>
 
 #include "transit/api_client.h"
+#include "transit/captive_portal.h"
 #include "transit/config_store.h"
 #include "transit/http_transport.h"
 #include "transit/icon_cache.h"
+#include "transit/offline_cache.h"
 #include "transit/power_scheduler.h"
 #include "transit/render_engine.h"
 #include "transit/setup_flow.h"
 #include "transit/sta_client.h"
+#include "transit/time_keeper.h"
 #include "transit/trip_planner.h"
 #include "transit/ui_logic.h"
 
@@ -67,6 +71,25 @@ bool connectWifi(const std::string& ssid, const std::string& password) {
   WiFi.begin(ssid.c_str(), password.c_str());
   uint32_t startMs = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startMs < 20000) {
+    delay(250);
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
+// Associates to an open (no-password) network -- the shape onboard transit
+// Wi-Fi takes. Association is NOT the same as having internet here: an
+// open network that fronts a captive portal reports WL_CONNECTED long
+// before anything can actually be fetched through it, which is exactly why
+// captive_portal.h exists and why the caller must probe afterward rather
+// than trusting this return value. Shorter timeout than connectWifi()
+// above: this is a fallback attempt on battery, after the home network has
+// already failed and burned its own 20 seconds.
+bool connectOpenWifi(const std::string& ssid) {
+  WiFi.disconnect(/*wifioff=*/false);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid.c_str());
+  uint32_t startMs = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 12000) {
     delay(250);
   }
   return WiFi.status() == WL_CONNECTED;
@@ -259,14 +282,47 @@ void setup() {
   status.stopName = g_configStore.stopId();
   status.batteryPercent = readBatteryPercent();
 
+  // Whatever the previous wake left in RTC memory (time_keeper.h). Read
+  // before anything else touches the clock, since a successful SNTP sync
+  // below overwrites the system time this is the only alternative to.
+  const ApproxClockState priorClock = loadApproxClock();
+
   bool wifiOk = connectWifi(g_configStore.wifiSsid(), g_configStore.wifiPassword());
+
+  // Home network isn't in range -- try the configured open network (onboard
+  // transit Wi-Fi) and, if something is intercepting it, hand the portal
+  // the saved email/phone. Only attempted when the user has actually
+  // configured an SSID: the board never joins an open network on its own.
+  if (!wifiOk) {
+    const std::string busSsid = g_configStore.busWifiSsid();
+    if (!busSsid.empty() && connectOpenWifi(busSsid)) {
+      CaptivePortalConfig portalConfig;
+      portalConfig.identity = g_configStore.busWifiIdentity();
+      portalConfig.overrideSubmitUrl = g_configStore.busPortalSubmitUrl();
+      portalConfig.overrideFieldName = g_configStore.busPortalFieldName();
+
+      CaptivePortalClient portalClient(g_httpTransport);
+      const CaptivePortalResult portalResult = portalClient.connect(portalConfig);
+      wifiOk = portalResult.online;
+      if (!wifiOk) {
+        // Associated but still walled off. Drop the association rather than
+        // leaving the radio camped on a network nothing can be fetched
+        // through -- every subsequent request would just burn battery
+        // collecting splash pages.
+        WiFi.disconnect(/*wifioff=*/false);
+      }
+    }
+  }
   status.wifiOk = wifiOk;
 
   int64_t nowEpoch = 0;
+  bool clockFromSntp = false;
   std::vector<Route> routes;
-  std::vector<BoardStatus::PresetTripSummaryLine> presetSummaryLines;
+  std::vector<PresetTripPlan> presetPlans;
+  bool anyFetchOk = false;
   if (wifiOk) {
     nowEpoch = syncTimeAndGetEpoch();
+    clockFromSntp = nowEpoch > 0;
 
     // Preset "Home"/"Work" trip planning (trip_planner.h) rides along on
     // this SAME stopDepartures() call rather than issuing its own -- every
@@ -300,6 +356,7 @@ void setup() {
     StopDeparturesResponse response;
     bool fetchOk = apiClient.stopDepartures(stopIds, params, response);
     status.lastFetchFailed = !fetchOk;
+    anyFetchOk = anyFetchOk || fetchOk;
     if (fetchOk) {
       // ui_logic::buildDepartureBoard() assumes it's handed exactly one
       // stop's routes -- filter the combined multi-stop response down to
@@ -316,12 +373,10 @@ void setup() {
       // departureWindowMin) are irrelevant to, and must not silently break,
       // a preset the user explicitly configured.
       if (!homePreset.legs.empty()) {
-        presetSummaryLines.push_back(
-            formatPresetSummaryLine(planPresetTrip(response.routeDepartures, homePreset, nowEpoch), nowEpoch));
+        presetPlans.push_back(planPresetTrip(response.routeDepartures, homePreset, nowEpoch));
       }
       if (!workPreset.legs.empty()) {
-        presetSummaryLines.push_back(
-            formatPresetSummaryLine(planPresetTrip(response.routeDepartures, workPreset, nowEpoch), nowEpoch));
+        presetPlans.push_back(planPresetTrip(response.routeDepartures, workPreset, nowEpoch));
       }
     }
 
@@ -337,13 +392,39 @@ void setup() {
     if (!staStopCode.empty()) {
       sta::StaClient staClient(g_httpTransport, &g_staSdStore);
       std::vector<Route> staRoutes = staClient.fetchDepartures(staStopCode);
+      if (!staRoutes.empty()) anyFetchOk = true;
       routes.insert(routes.end(), staRoutes.begin(), staRoutes.end());
     }
   } else {
     status.lastFetchFailed = true;
   }
-  status.lastUpdatedEpoch = nowEpoch;
-  status.presetTrips = presetSummaryLines;
+
+  // No network (or no usable answer from it), but the RTC-memory clock may
+  // still know roughly what time it is -- which is the difference between
+  // a board that can count down to a cached departure and one that can only
+  // print bare clock times. time_keeper.h refuses to vouch for the estimate
+  // once its accumulated error bound gets too wide, and that refusal is
+  // honored here rather than second-guessed.
+  if (nowEpoch <= 0 && approximateClockUsable(priorClock, millis())) {
+    nowEpoch = estimateNowEpoch(priorClock, millis());
+    if (nowEpoch > 0) {
+      status.clockIsApproximate = true;
+      // Push it into the system clock too: formatClock()/localtime_r() in
+      // render_engine.cpp and minutesSinceLocalMidnight() below both read
+      // the C library's notion of time, not this variable, so an estimate
+      // that isn't installed here would leave them stuck at the epoch.
+      struct timeval tv {};
+      tv.tv_sec = static_cast<time_t>(nowEpoch);
+      tv.tv_usec = 0;
+      settimeofday(&tv, nullptr);
+    }
+  }
+
+  // Everything from here on takes real time (rendering, an SD mount, a
+  // 190KB STA feed parse), so nextClockState() below needs to know how much
+  // of it has elapsed -- see its comment on why storing the epoch as of
+  // *this* moment would quietly lose that gap on every single wake.
+  const uint32_t nowEpochEstablishedMs = millis();
 
   UiSettings uiSettings;
   uiSettings.departureWindowMin = g_configStore.departureWindowMin();
@@ -353,7 +434,63 @@ void setup() {
   uiSettings.hiddenRoutes = g_configStore.hiddenRoutes();
   uiSettings.routeOrder = g_configStore.routeOrder();
 
-  std::vector<DirectionBoard> board = buildDepartureBoard(routes, uiSettings, nowEpoch);
+  std::vector<DirectionBoard> board;
+  if (anyFetchOk) {
+    board = buildDepartureBoard(routes, uiSettings, nowEpoch);
+
+    // Persist what was just computed, so the next wake has something to
+    // draw if it comes up with no network (offline_cache.h). The already-
+    // built board is cached rather than the raw API response because the
+    // response runs to tens of kilobytes and an NVS string value tops out
+    // near 4000 -- see that header for the trade that implies.
+    CachedBoard toCache;
+    toCache.fetchedAtEpoch = nowEpoch;
+    toCache.board = board;
+    toCache.presetPlans = presetPlans;
+    const std::string blob = serializeCachedBoard(toCache);
+    if (!blob.empty()) g_configStore.setCachedBoard(blob);
+  } else {
+    // Nothing fetched this wake. Fall back to the last board that was, and
+    // say so in the header rather than drawing an empty screen -- a bus
+    // that left 10 minutes ago is still better information than nothing,
+    // as long as the reader can tell it's old.
+    CachedBoard restored;
+    if (deserializeCachedBoard(g_configStore.cachedBoard(), restored)) {
+      // Set before the prune, and set even when the prune empties the
+      // cache out: "the cache aged out completely" and "there has never
+      // been a cache" call for different things on screen, and the render
+      // engine can only tell them apart from this flag.
+      status.dataIsCached = true;
+      // -1, not 0, when there's no clock: without one the age is genuinely
+      // unknown, and reporting 0 would label a board of unknown vintage
+      // "Cached just now". See BoardStatus::cachedAgeMin.
+      status.cachedAgeMin = nowEpoch > 0 ? cachedAgeMinutes(restored, nowEpoch) : -1;
+
+      // Absolute departure epochs age on their own: anything already gone
+      // is dropped here rather than rendered as "Due" forever
+      // (formatDepartureChip() clamps negative minutes to 0). A cache left
+      // offline long enough empties itself out instead of lying.
+      //
+      // Without a clock this prune is a no-op (offline_cache.h: no clock
+      // means no basis for calling anything expired), which is exactly why
+      // the age above has to be reported as unknown -- the rows could be
+      // from yesterday and nothing here can tell.
+      pruneExpiredDepartures(restored, nowEpoch);
+      board = restored.board;
+      presetPlans = restored.presetPlans;
+    }
+  }
+
+  // Formatted last, from whichever source won above, so a restored plan's
+  // "leave now" urgency is recomputed against the current clock instead of
+  // being frozen at whatever it was when the plan was cached.
+  std::vector<BoardStatus::PresetTripSummaryLine> presetSummaryLines;
+  for (const PresetTripPlan& plan : presetPlans) {
+    presetSummaryLines.push_back(formatPresetSummaryLine(plan, nowEpoch));
+  }
+  status.lastUpdatedEpoch = nowEpoch;
+  status.presetTrips = presetSummaryLines;
+
   renderEngine.setFocusMode(g_configStore.focusMode());
   renderEngine.renderDepartureBoard(board, status);
 
@@ -366,6 +503,17 @@ void setup() {
 
   int wakeIntervalMin = computeNextWakeIntervalMin(
       g_configStore.refreshIntervalMin(), sleepWindow, minutesSinceLocalMidnight(nowEpoch));
+
+  // Hand the next wake a clock (time_keeper.h). Must happen after
+  // wakeIntervalMin is known -- the estimate on the other side of the sleep
+  // is "the time at sleep entry, plus however long the timer was armed
+  // for" -- and before enterDeepSleep(), which never returns. nowEpoch is
+  // carried forward to *this* instant rather than stored as of when it was
+  // established, so the seconds spent fetching and rendering aren't
+  // silently dropped once per wake.
+  const int64_t epochAtSleepEntry =
+      nowEpoch > 0 ? nowEpoch + static_cast<int64_t>((millis() - nowEpochEstablishedMs) / 1000) : 0;
+  saveApproxClock(nextClockState(priorClock, epochAtSleepEntry, wakeIntervalMin, clockFromSntp));
 
   enterDeepSleep(g_display, wakeIntervalMin);  // noreturn — chip resets on wake
 }

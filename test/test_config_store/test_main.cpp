@@ -38,12 +38,111 @@ class InMemoryConfigBackend : public transit::ConfigBackend {
   }
   bool isSet(const char* key) override { return setKeys_.count(key) > 0; }
 
+  // Every key that has actually been written, for the NVS key-length
+  // check below.
+  const std::set<std::string>& writtenKeys() const { return setKeys_; }
+
  private:
   std::map<std::string, std::string> strings_;
   std::map<std::string, int32_t> ints_;
   std::map<std::string, bool> bools_;
   std::set<std::string> setKeys_;
 };
+
+
+// --- Bus Wi-Fi captive-portal auto-login + offline cache -------------------
+
+void test_bus_wifi_settings_empty_by_default_and_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  // Every one of these empty is what turns the whole feature off -- the
+  // board must never join an open network it wasn't told about.
+  TEST_ASSERT_EQUAL_STRING("", store.busWifiSsid().c_str());
+  TEST_ASSERT_EQUAL_STRING("", store.busWifiIdentity().c_str());
+  TEST_ASSERT_EQUAL_STRING("", store.busPortalSubmitUrl().c_str());
+  TEST_ASSERT_EQUAL_STRING("", store.busPortalFieldName().c_str());
+
+  store.setBusWifiSsid("STA-WiFi");
+  store.setBusWifiIdentity("rider@example.com");
+  store.setBusPortalSubmitUrl("http://1.2.3.4:8080/auth");
+  store.setBusPortalFieldName("phone");
+
+  TEST_ASSERT_EQUAL_STRING("STA-WiFi", store.busWifiSsid().c_str());
+  TEST_ASSERT_EQUAL_STRING("rider@example.com", store.busWifiIdentity().c_str());
+  TEST_ASSERT_EQUAL_STRING("http://1.2.3.4:8080/auth", store.busPortalSubmitUrl().c_str());
+  TEST_ASSERT_EQUAL_STRING("phone", store.busPortalFieldName().c_str());
+
+  // Clearing the SSID alone turns the feature off without discarding the
+  // identity the user typed, so re-enabling it doesn't mean re-typing.
+  store.setBusWifiSsid("");
+  TEST_ASSERT_EQUAL_STRING("", store.busWifiSsid().c_str());
+  TEST_ASSERT_EQUAL_STRING("rider@example.com", store.busWifiIdentity().c_str());
+}
+
+void test_cached_board_empty_by_default_and_round_trips_a_large_blob() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  TEST_ASSERT_EQUAL_STRING("", store.cachedBoard().c_str());
+
+  // A realistic worst case: right at offline_cache.h's own size cap, with
+  // the tab/newline delimiters that format uses.
+  std::string blob = "TCB1\t1700000000\n";
+  while (blob.size() < 3400) blob += "R\t1:31\t31\tbus-31\t31\t\t1A7F37\tFFFFFF\t1\n";
+  store.setCachedBoard(blob);
+  TEST_ASSERT_EQUAL_STRING(blob.c_str(), store.cachedBoard().c_str());
+
+  store.setCachedBoard("");
+  TEST_ASSERT_EQUAL_STRING("", store.cachedBoard().c_str());
+}
+
+// NVS key names are capped at 15 characters (NVS_KEY_NAME_MAX_SIZE is 16
+// including the null terminator). A longer name compiles fine and then
+// fails at runtime with ESP_ERR_NVS_KEY_TOO_LONG -- invisible to every
+// host-side test that doesn't check for it, and invisible to the
+// cross-compile too. This drives every accessor once and asserts that
+// nothing ConfigStore actually writes could trip that at runtime.
+void test_every_nvs_key_fits_the_fifteen_character_limit() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  store.setWifiSsid("s");
+  store.setWifiPassword("p");
+  store.setApiKey("k");
+  store.setStopId("1:1");
+  store.setRefreshIntervalMin(60);
+  store.setSleepWindowStartMin(0);
+  store.setSleepWindowEndMin(1);
+  store.setDepartureWindowMin(90);
+  store.setMaxDeparturesPerDirection(3);
+  store.setSortByTime(true);
+  store.setStaticDirection(0);
+  store.setHiddenRoutes({"1:1"});
+  store.setRouteOrder({"1:1"});
+  store.setTimeFormat("HH:mm");
+  store.setLocale("en");
+  store.setDisplayPortrait(true);
+  store.setStaStopCode("4377");
+  store.setPresetLegs(transit::ConfigStore::PresetId::kHome, {});
+  store.setPresetLegs(transit::ConfigStore::PresetId::kWork, {});
+  store.setPresetWalkToFirstStopMin(transit::ConfigStore::PresetId::kHome, 5);
+  store.setPresetWalkToFirstStopMin(transit::ConfigStore::PresetId::kWork, 5);
+  store.setTransferBufferMin(3);
+  store.setFocusMode(true);
+  store.setBusWifiSsid("s");
+  store.setBusWifiIdentity("i");
+  store.setBusPortalSubmitUrl("u");
+  store.setBusPortalFieldName("f");
+  store.setCachedBoard("c");
+
+  for (const std::string& key : backend.writtenKeys()) {
+    TEST_ASSERT_LESS_OR_EQUAL_size_t_MESSAGE(15, key.size(), key.c_str());
+  }
+  // Sanity check that the loop above actually saw the keys, rather than
+  // passing vacuously against an empty set.
+  TEST_ASSERT_GREATER_THAN_size_t(20, backend.writtenKeys().size());
+}
 
 }  // namespace
 
@@ -366,5 +465,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_preset_walk_to_first_stop_min_default_and_round_trip);
   RUN_TEST(test_transfer_buffer_min_default_and_round_trip);
   RUN_TEST(test_focus_mode_default_and_round_trip);
+  RUN_TEST(test_bus_wifi_settings_empty_by_default_and_round_trip);
+  RUN_TEST(test_cached_board_empty_by_default_and_round_trips_a_large_blob);
+  RUN_TEST(test_every_nvs_key_fits_the_fifteen_character_limit);
   return UNITY_END();
 }

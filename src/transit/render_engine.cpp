@@ -121,6 +121,23 @@ void formatClock(int64_t epochSeconds, char* buf, size_t bufLen) {
   snprintf(buf, bufLen, "%02d:%02d", tmVal.tm_hour, tmVal.tm_min);
 }
 
+// Compact "how old is this" label for cached data (BoardStatus::cachedAgeMin).
+// Minutes below an hour, then whole hours, then whole days -- a board that
+// has been offline for three days should say so at a glance rather than
+// printing "4320m ago". ASCII only, like every other on-device string: the
+// bundled Noto Sans subset has no glyph for non-ASCII punctuation and
+// renders a tofu box instead.
+std::string formatCacheAge(int minutes) {
+  // Negative means the caller restored a cache but has no clock to measure
+  // its age against (BoardStatus::cachedAgeMin) -- say so rather than
+  // rounding an unknown down to "just now".
+  if (minutes < 0) return "(age unknown)";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return std::to_string(minutes) + "m ago";
+  if (minutes < 60 * 24) return std::to_string(minutes / 60) + "h ago";
+  return std::to_string(minutes / (60 * 24)) + "d ago";
+}
+
 // One departure chip. docs/UI_BEHAVIOR.md: real-time gets a badge next to the
 // time (icon-only in the reference apps; rendered here as "RT" text plus a
 // dithered pill background -- see drawDirectionRow() -- since no bolt icon
@@ -211,12 +228,26 @@ void drawStatusHeader(fui::DrawTarget& target, int16_t screenW, const BoardStatu
 
   int16_t cursorRight = static_cast<int16_t>(battery.x - 10);
 
-  // Wi-Fi / fetch-failure indicator, left of the battery glyph.
+  // Wi-Fi / fetch-failure indicator, left of the battery glyph. "Offline"
+  // rather than "No Wi-Fi" when there's cached data behind it: the board is
+  // still showing real departures in that case, and "No Wi-Fi" next to a
+  // full board reads like the board itself is broken.
   if (!status.wifiOk || status.lastFetchFailed) {
-    const char* label = !status.wifiOk ? "No Wi-Fi" : "Fetch failed";
+    // "Offline" only when the radio genuinely couldn't get on a network.
+    // A fetch that failed with Wi-Fi up is a different problem -- a bad
+    // key, a quota, a 5xx -- and saying "Offline" for it would throw away
+    // the one diagnostic the header can give. The staleness itself is
+    // already carried by the "Cached 2h ago" line next to this either way.
+    const char* label;
+    if (!status.wifiOk) {
+      label = status.dataIsCached ? "Offline" : "No Wi-Fi";
+    } else {
+      label = "Fetch failed";
+    }
     fui::TextStyle warn;
     warn.align = fui::TextAlign::Right;
     warn.maxLines = 1;
+    warn.bold = true;
     const fui::Size sz = target.measureText(warn.font, label, warn);
     const fui::Rect rect{static_cast<int16_t>(cursorRight - sz.width),
                          static_cast<int16_t>((kHeaderHeight - sz.height) / 2), sz.width, sz.height};
@@ -224,12 +255,23 @@ void drawStatusHeader(fui::DrawTarget& target, int16_t screenW, const BoardStatu
     cursorRight = static_cast<int16_t>(rect.x - 10);
   }
 
-  // Last-updated clock (the fetch/SNTP-sync time, not a live countdown --
-  // this device deep-sleeps between wakes, see docs/UI_BEHAVIOR.md's refresh
-  // cadence discussion), left of that.
-  char clock[8];
-  formatClock(status.lastUpdatedEpoch, clock, sizeof(clock));
-  const std::string updated = std::string("Updated ") + clock;
+  // Freshness, left of that. For a live fetch this is the usual
+  // last-updated clock (the fetch/SNTP-sync time, not a live countdown --
+  // this device deep-sleeps between wakes, see docs/UI_BEHAVIOR.md's
+  // refresh cadence discussion). For restored cache it's how stale the data
+  // is instead, which is the question a cached board actually raises -- the
+  // clock time it was fetched at means much less than "2h ago" does. A
+  // leading "~" marks a clock that came from time_keeper.h's approximate
+  // RTC-memory clock rather than a real SNTP sync, so an estimate is never
+  // presented as the exact time.
+  std::string updated;
+  if (status.dataIsCached) {
+    updated = std::string("Cached ") + formatCacheAge(status.cachedAgeMin);
+  } else {
+    char clock[8];
+    formatClock(status.lastUpdatedEpoch, clock, sizeof(clock));
+    updated = std::string("Updated ") + (status.clockIsApproximate ? "~" : "") + clock;
+  }
   fui::TextStyle updatedStyle;
   updatedStyle.align = fui::TextAlign::Right;
   updatedStyle.maxLines = 1;
@@ -528,9 +570,24 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
   if (board.empty()) {
     fui::TextStyle empty;
     empty.align = fui::TextAlign::Center;
-    empty.maxLines = 2;
+    empty.maxLines = 3;
     const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin), bodyHeight};
-    target_.text(emptyRect, "No departures to show.", empty);
+    // Distinguish "the network is fine, this stop just has nothing coming"
+    // from the two offline cases, which need completely different action
+    // from the reader: a cached board that has aged out entirely is not the
+    // same situation as never having had data to cache.
+    const char* message;
+    if (status.dataIsCached) {
+      // main.cpp sets dataIsCached whenever a cache was restored, even if
+      // pruning then emptied it -- which is the only way this case can be
+      // reached, and is what makes the distinction below meaningful.
+      message = "Every cached departure has already left, and there's no network to refresh.";
+    } else if (!status.wifiOk || status.lastFetchFailed) {
+      message = "Offline, and nothing cached yet to fall back on.";
+    } else {
+      message = "No departures to show.";
+    }
+    target_.text(emptyRect, message, empty);
   } else if (focusMode_) {
     const std::vector<const DirectionBoard*> focusBoards = selectFocusBoards(board, kFocusMaxBoards);
     const int rowsToDraw = static_cast<int>(focusBoards.size());

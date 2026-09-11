@@ -157,6 +157,41 @@ class ConfigStore {
   bool focusMode();
   void setFocusMode(bool enabled);
 
+  // --- Bus Wi-Fi captive-portal auto-login (captive_portal.h) -------------
+  //
+  // An open Wi-Fi network the board should try when its normal home network
+  // isn't there -- the onboard Wi-Fi on a transit vehicle. Empty (default)
+  // = the feature is off entirely and the board never joins an open
+  // network. Settings-portal-only, like STA/orientation above.
+  std::string busWifiSsid();
+  void setBusWifiSsid(const std::string& ssid);
+
+  // The email or phone number to submit to that network's sign-in page.
+  // Stored in NVS alongside the Wi-Fi password and API key, and like them
+  // never compiled into tracked source.
+  std::string busWifiIdentity();
+  void setBusWifiIdentity(const std::string& identity);
+
+  // Optional manual overrides for portals whose form captive_portal.h's
+  // discoverLoginForm() can't read off the page (a JavaScript-built form,
+  // typically). Both empty (default) = rely on discovery, which is enough
+  // for an ordinary "type your email, press Connect" splash page. See
+  // docs/OFFLINE_AND_BUS_WIFI.md for how to capture these two values.
+  std::string busPortalSubmitUrl();
+  void setBusPortalSubmitUrl(const std::string& url);
+  std::string busPortalFieldName();
+  void setBusPortalFieldName(const std::string& fieldName);
+
+  // --- Offline cache (offline_cache.h) ------------------------------------
+  //
+  // The last successfully fetched departure board, serialized by
+  // offline_cache.h's serializeCachedBoard(), so a wake with no network can
+  // redraw it marked as cached instead of showing an empty board. Empty =
+  // nothing cached yet. Written by main.cpp after every successful fetch,
+  // never by the settings portal.
+  std::string cachedBoard();
+  void setCachedBoard(const std::string& blob);
+
  private:
   ConfigBackend& backend_;
 };

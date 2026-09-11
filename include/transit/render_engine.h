@@ -63,6 +63,31 @@ struct BoardStatus {
                               // formatDepartureChip()'s urgency handling.
   };
   std::vector<PresetTripSummaryLine> presetTrips;
+
+  // --- Offline / stale-data indicators ------------------------------------
+  //
+  // True when the rows below were restored from the NVS cache
+  // (offline_cache.h) rather than fetched this wake -- the board is showing
+  // real departures, just not fresh ones, and saying so is the whole point
+  // of caching them instead of drawing an empty screen. cachedAgeMin is how
+  // old that data is in whole minutes, rendered in the header as "Cached 2h
+  // ago" in place of the usual "Updated 14:32".
+  //
+  // cachedAgeMin is -1 when the age is genuinely unknown -- the board
+  // restored a cache but has no clock to measure it against (offline long
+  // enough that time_keeper.h's estimate aged out, or a cold boot with no
+  // network). That renders as "Cached (age unknown)": reporting 0 there
+  // would label a board of unknown vintage as fresh, which is the one
+  // thing this whole treatment exists to prevent.
+  bool dataIsCached = false;
+  int cachedAgeMin = 0;
+
+  // True when lastUpdatedEpoch came from time_keeper.h's approximate clock
+  // (RTC memory carried across deep sleep) rather than a real SNTP sync.
+  // Countdowns computed from it are still useful but are estimates, so the
+  // header marks the clock with a leading "~" rather than presenting an
+  // estimate as if it were the correct time.
+  bool clockIsApproximate = false;
 };
 
 // Pushes a fully-drawn frame to the physical panel. RenderEngine only draws
