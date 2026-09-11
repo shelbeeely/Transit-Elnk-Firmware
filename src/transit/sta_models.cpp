@@ -25,33 +25,43 @@ std::vector<Route> staDeparturesToRoutes(const std::vector<StaDeparture>& depart
   // own entity order) — buildDepartureBoard() only reorders via
   // settings.routeOrder/sortByTime, it doesn't care about input order
   // otherwise, but a stable grouping still makes output deterministic for
-  // a given input, which the tests below rely on.
+  // a given input, which the tests below rely on. Each route's
+  // mergedItineraries then splits further by directionId (usually just {0}
+  // when no StaSdStore trip lookup filled in a real one — see
+  // StaDeparture::directionId's comment).
   std::vector<std::string> routeOrder;
-  std::unordered_map<std::string, Route> routesByid;
+  std::unordered_map<std::string, Route> routesById;
+  // routeId -> directionId -> index into that route's mergedItineraries.
+  std::unordered_map<std::string, std::unordered_map<uint8_t, size_t>> directionIndexByRoute;
 
   for (const auto& dep : departures) {
-    auto it = routesByid.find(dep.routeId);
-    if (it == routesByid.end()) {
+    auto routeIt = routesById.find(dep.routeId);
+    if (routeIt == routesById.end()) {
       Route route;
       route.globalRouteId = "sta:" + dep.routeId;
       route.routeShortName = "STA " + (!dep.routeShortName.empty() ? dep.routeShortName : dep.routeId);
       route.routeColor = toHex6(dep.routeColor);
       route.routeTextColor = toHex6(dep.routeTextColor);
 
+      routeOrder.push_back(dep.routeId);
+      routeIt = routesById.emplace(dep.routeId, std::move(route)).first;
+    }
+    Route& route = routeIt->second;
+
+    auto& directionIndex = directionIndexByRoute[dep.routeId];
+    auto dirIt = directionIndex.find(dep.directionId);
+    if (dirIt == directionIndex.end()) {
       MergedItinerary mi;
-      mi.directionId = 0;
+      mi.directionId = dep.directionId;
       mi.closestStop.stopName = stopName;
       route.mergedItineraries.push_back(std::move(mi));
-
-      routeOrder.push_back(dep.routeId);
-      it = routesByid.emplace(dep.routeId, std::move(route)).first;
+      dirIt = directionIndex.emplace(dep.directionId, route.mergedItineraries.size() - 1).first;
     }
-
-    MergedItinerary& mi = it->second.mergedItineraries[0];
+    MergedItinerary& mi = route.mergedItineraries[dirIt->second];
 
     Itinerary itin;
     itin.internalItineraryId = dep.tripId;
-    itin.directionId = 0;
+    itin.directionId = dep.directionId;
     itin.headsign = !dep.destination.empty() ? dep.destination : ("Route " + dep.routeId);
     itin.mergedHeadsign = itin.headsign;
     itin.isActive = true;
@@ -71,7 +81,7 @@ std::vector<Route> staDeparturesToRoutes(const std::vector<StaDeparture>& depart
   std::vector<Route> routes;
   routes.reserve(routeOrder.size());
   for (const auto& routeId : routeOrder) {
-    routes.push_back(std::move(routesByid.at(routeId)));
+    routes.push_back(std::move(routesById.at(routeId)));
   }
   return routes;
 }

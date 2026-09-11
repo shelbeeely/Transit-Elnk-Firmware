@@ -8,6 +8,11 @@
 # Local agent worktrees (harness-managed, not project source)
 .claude/worktrees/
 
+# Generated STA SD-card data (tools/gen_sta_tables.py's SD output) -- meant
+# to be copied onto a physical SD card, not committed; regenerating it from
+# a fresh GTFS feed is cheap. See docs/STA_INTEGRATION.md.
+sd_card_data/
+
 # Local-dev-only secrets (root CLAUDE.md: the Transit API key is entered
 # on-device via the setup portal and stored in NVS, never compiled into
 # tracked source -- this covers the untracked local file CLAUDE.md

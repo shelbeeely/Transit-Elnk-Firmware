@@ -42,9 +42,12 @@ portal for things that aren't part of first-run setup:
   portrait.
 - **STA departures** — optionally show Spokane Transit Authority arrivals
   alongside Transit's, by entering the numeric stop code printed on a
-  physical STA stop sign. See
+  physical STA stop sign. An SD card (the X4 has a real slot) is optional
+  on top of this — it carries STA's full static GTFS data for real
+  per-trip headsigns/direction grouping, where the board otherwise falls
+  back to smaller always-available flash tables. See
   [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) for how that data
-  source works and its compliance notes.
+  source (and the SD card layer) works, and its compliance notes.
 
 ## Building
 

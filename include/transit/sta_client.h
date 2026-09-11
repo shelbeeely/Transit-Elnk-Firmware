@@ -15,23 +15,31 @@
 // sta_feed_parser.h's file comment for why this buffers the full response
 // rather than streaming it incrementally.
 //
-// Hardware-dependent (ESP.getFreeHeap()) — only buildable under
-// [env:xteink_x4], not [env:native]; sta_feed_parser.h/sta_models.h (the
-// actual parsing/adapting logic this calls) are hardware-independent and
-// tested there instead.
+// Hardware-dependent (ESP.getFreeHeap(), StaSdStore) — only buildable under
+// [env:xteink_x4], not [env:native]; sta_feed_parser.h/sta_models.h/
+// sta_gtfs_binary.h (the actual parsing/adapting/table-lookup logic this
+// calls) are hardware-independent and tested there instead.
 
 #include <string>
 #include <vector>
 
 #include "transit/api_client.h"
 #include "transit/models.h"
+#include "transit/sta_sd_store.h"
 
 namespace transit {
 namespace sta {
 
 class StaClient {
  public:
-  explicit StaClient(HttpTransport& transport);
+  // sdStore may be null (caller chose not to offer one) -- every use this
+  // makes of it is a pure enrichment, see fetchDepartures()'s comment. When
+  // non-null, callers are expected to have already called
+  // sdStore->begin() themselves (its own mount-once caching means calling
+  // it again here on every fetch would be harmless but redundant; main.cpp
+  // calls it once at boot instead, before the display, per StaSdStore's own
+  // shared-SPI-bus ordering requirement).
+  StaClient(HttpTransport& transport, StaSdStore* sdStore);
 
   // stopCode is ConfigStore::staStopCode() — the numeric code printed on
   // the physical STA stop sign. Resolves it via sta_models.h's
@@ -45,6 +53,15 @@ class StaClient {
   // BoardStatus's single Transit-stop header field — see
   // renderDepartureBoard()).
   //
+  // When sdStore is available, each departure's trip_id is looked up
+  // against sd_card_data/sta/trips.bin to fill in StaDeparture::directionId
+  // (unreliable on the live feed itself, see sta_feed_parser.h) and, only
+  // when the live feed's own trip_short_name was empty, a fallback
+  // headsign — the live value is preferred when present since it's the
+  // fresher of the two. A miss (SD unavailable, or this trip isn't in the
+  // table) just leaves those fields at their un-enriched defaults; never a
+  // reason to drop the departure.
+  //
   // Returns an empty vector when: stopCode is empty or unresolvable, the
   // HTTP fetch fails, the feed doesn't parse, or there isn't enough free
   // heap to safely attempt it — always treated as "STA had nothing to
@@ -54,6 +71,7 @@ class StaClient {
 
  private:
   HttpTransport& transport_;
+  StaSdStore* sdStore_;
 };
 
 }  // namespace sta

@@ -56,6 +56,7 @@ NvsConfigBackend g_configBackend;
 ConfigStore g_configStore(g_configBackend);
 WifiHttpTransport g_httpTransport;
 IconCache g_iconCache(g_httpTransport);
+sta::StaSdStore g_staSdStore;
 
 bool connectWifi(const std::string& ssid, const std::string& password) {
   WiFi.mode(WIFI_STA);
@@ -121,6 +122,17 @@ void setup() {
   BoardConfig::holdPowerRails();
   BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
   bool enterSettingsRequested = waitForBootButtonAndCheckSettingsHold();
+
+  // Must run before g_display.begin(): the X4 shares its SPI bus between
+  // the display and the SD card (see StaSdStore's file comment), and
+  // SDCardManager::begin() expects to run first so it can deselect a
+  // not-yet-initialized display controller that would otherwise drive the
+  // shared MISO line. If there's no card or it fails to mount, this costs
+  // one mount attempt (repeated every wake -- see StaSdStore::begin()'s own
+  // comment on why that isn't cached across deep-sleep cycles) but never
+  // blocks boot; STA still works via the flash-baked route/stop tables
+  // regardless.
+  g_staSdStore.begin();
 
   g_display.begin();
 
@@ -205,7 +217,7 @@ void setup() {
     // above, since the board still has Transit's departures either way.
     std::string staStopCode = g_configStore.staStopCode();
     if (!staStopCode.empty()) {
-      sta::StaClient staClient(g_httpTransport);
+      sta::StaClient staClient(g_httpTransport, &g_staSdStore);
       std::vector<Route> staRoutes = staClient.fetchDepartures(staStopCode);
       routes.insert(routes.end(), staRoutes.begin(), staRoutes.end());
     }

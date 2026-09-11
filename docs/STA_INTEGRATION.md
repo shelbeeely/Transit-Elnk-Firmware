@@ -72,6 +72,42 @@ this isn't a per-build step):
 python3 tools/gen_sta_tables.py <path-or-url-to-a-fresh-sta-gtfs.zip>
 ```
 
+## SD card: full static GTFS data (optional)
+
+The X4 has a real, working SD slot (SPI-mode, shared with the display's SPI
+bus — see `include/transit/sta_sd_store.h`'s file comment on why it must be
+mounted before the display's own `begin()`) via `freeink-sdk`'s
+`SDCardManager`/SdFat. The same `tools/gen_sta_tables.py` run above also
+writes `sd_card_data/sta/{routes,stops,trips}.bin` — copy that `sta/`
+directory onto the card's root (paths `/sta/routes.bin`, `/sta/stops.bin`,
+`/sta/trips.bin`) to unlock what the flash tables can't fit:
+
+- **`trips.bin`** — all ~8,400 of STA's scheduled trips (trip_id →
+  route_id/direction_id/headsign), ~134KB. This is what actually motivates
+  the SD path: `direction_id` here is the standard GTFS 0/1 field from
+  static `trips.txt`, reliable unlike the live feed's own `direction_id`
+  (see above) — `sta_client.cpp` looks up each departure's trip here after
+  parsing and, when found, fills in `StaDeparture::directionId` for real
+  per-direction grouping (`sta_models.h`'s `staDeparturesToRoutes()`) and a
+  fallback headsign for the rare case the live feed's own
+  `trip_short_name` was empty.
+- **`stops.bin`** — the same ~1,665 stops as the flash table, plus lat/lon
+  this time (~61KB). Exposed via `StaSdStore::nearbyStops()` (a linear
+  scan + haversine sort — plenty fast at this record count, no spatial
+  index needed) for a future nearby-stop search UI matching the Transit
+  API setup flow's own lat/lon search; not wired into `setup_flow.cpp`
+  yet, STA stop entry is still the direct stop-code field described above.
+- **`routes.bin`** — the same route data as the flash table (~1KB),
+  present mainly for format symmetry/future use; the flash copy already
+  covers what's needed today.
+
+All three are optional and independent of each other and of the card's
+presence at all — see `sta_sd_store.h`'s file comment. `sta_gtfs_binary.h`
+is the shared, hardware-independent record format/binary-search reader
+(tested under `[env:native]` against synthetic fixtures, since real SD
+hardware can't be exercised there); `sta_sd_store.h` is the hardware-only
+glue that actually opens the files via `SDCardManager`.
+
 ## Setup UX
 
 Not part of first-run setup (it's an optional add-on, not something the
@@ -93,13 +129,26 @@ later. Leaving it blank (or clearing a previously-set one) turns STA off.
   an allocation failure — see `sta_client.cpp`'s `kMinFreeHeapBytes`. A true
   streaming decoder would be the more defensible long-term design if this
   proves insufficient on real hardware.
-- **No per-direction grouping.** STA's live `direction_id` isn't reliable
-  (see above), so every STA route shows as one merged group rather than
-  split by direction the way Transit API routes are.
-- **Table staleness.** The route/stop tables are a point-in-time snapshot,
-  not fetched live — a route STA adds after the tables were last generated
-  falls back to its raw numeric id (`sta_feed_parser.h`'s table-miss path),
-  and a moved/renamed stop needs the script re-run to pick up.
+- **Per-direction grouping needs the SD card.** STA's live `direction_id`
+  isn't reliable (see above), so without `trips.bin` present every STA
+  route still shows as one merged group rather than split by direction the
+  way Transit API routes are. Resolved when SD is present (see above) —
+  this is the flash-only fallback behavior.
+- **Table staleness.** The route/stop/trip tables are a point-in-time
+  snapshot, not fetched live — a route STA adds after the tables were last
+  generated falls back to its raw numeric id (`sta_feed_parser.h`'s
+  table-miss path), and a moved/renamed stop or a new trip needs the
+  script re-run (and, for SD, the files recopied onto the card) to pick up.
+- **SD mount isn't cached across wake cycles.** `main.cpp`'s wake cycle
+  always ends in deep sleep, which resets the MCU — there's no persistent
+  "session" for `StaSdStore::begin()`'s own within-a-boot caching
+  (`attempted_`) to survive between wakes. A board with no card (or one
+  that fails to mount) pays a fresh `SDCardManager::begin()` mount attempt
+  every single wake, not just the first. An RTC-memory-backed ("no card
+  last time") cache could avoid that repeat cost on cardless boards, at
+  the price of not detecting a card inserted after a cached failure until
+  a full power cycle — not implemented here; worth revisiting if the
+  per-wake mount-probe cost proves significant on real hardware.
 
 ## Compliance — STA's Developer Terms of Use, reviewed
 

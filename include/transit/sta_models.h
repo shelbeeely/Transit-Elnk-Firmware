@@ -48,6 +48,14 @@ struct StaDeparture {
   int64_t departureEpoch = 0; // StopTimeUpdate's departure.time, or
                                // arrival.time when departure is absent
                                // (a trip's last stop has no departure)
+  // 0 or 1, the standard GTFS direction — NOT from the live feed (see
+  // sta_feed_parser.h's note on why its own direction_id isn't used), but
+  // from sd_card_data/sta/trips.bin when a StaSdStore lookup for this
+  // trip succeeds (sta_client.cpp fills this in as an enrichment pass
+  // after parsing, when SD is available). Stays 0 -- the same "one merged
+  // direction per route" behavior as before this field existed -- whenever
+  // SD isn't available or doesn't have this trip.
+  uint8_t directionId = 0;
 };
 
 // Adapts already-parsed, already-stop-filtered STA departures into
@@ -56,10 +64,11 @@ struct StaDeparture {
 // ui_logic::buildDepartureBoard() — reusing its departure-window/sort/
 // hidden-route/max-per-direction handling instead of duplicating it here.
 //
-// One Route per distinct routeId, with a single MergedItinerary
-// (directionId 0 — GTFS-RT's direction_id showed values outside the
-// standard 0/1 on STA's feed in practice, see sta_feed_parser.h, so this
-// doesn't attempt to split STA departures by direction) and one
+// One Route per distinct routeId, with one MergedItinerary per distinct
+// directionId actually seen for that route (so a route with SD-sourced
+// direction data splits into two boards, same as a Transit API route with
+// two directions would; one still in play for departures whose directionId
+// stayed at its 0 default -- no SD trip match, or SD unavailable) and one
 // Itinerary+ScheduleItem pair per StaDeparture. routeShortName is prefixed
 // "STA " (docs/CONFIG_AND_STATE.md: departures are shown separately from
 // Transit's, not deduplicated against it) — drawRouteBadge() in

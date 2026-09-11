@@ -5,7 +5,10 @@
 
 #include <Arduino.h>
 
+#include <cstdlib>
+
 #include "transit/sta_feed_parser.h"
+#include "transit/sta_gtfs_binary.h"
 #include "transit/sta_models.h"
 
 namespace transit {
@@ -38,7 +41,31 @@ constexpr size_t kMinFreeHeapBytes = 260 * 1024;
 
 }  // namespace
 
-StaClient::StaClient(HttpTransport& transport) : transport_(transport) {}
+StaClient::StaClient(HttpTransport& transport, StaSdStore* sdStore)
+    : transport_(transport), sdStore_(sdStore) {}
+
+namespace {
+
+// Fills in directionId (and, when the live feed's own trip_short_name was
+// empty, destination) from sd_card_data/sta/trips.bin, when available --
+// see sta_client.h's fetchDepartures() comment. A lookup miss (SD
+// unavailable, or this trip isn't in the table) leaves `dep` exactly as
+// the feed parser produced it.
+void enrichFromSd(StaSdStore& sdStore, StaDeparture& dep) {
+  char* end = nullptr;
+  const unsigned long tripId = strtoul(dep.tripId.c_str(), &end, 10);
+  if (end == dep.tripId.c_str() || *end != '\0') return;  // non-numeric trip_id, shouldn't happen
+
+  SdTripInfo tripInfo;
+  if (!sdStore.lookupTrip(static_cast<uint32_t>(tripId), tripInfo)) return;
+
+  dep.directionId = tripInfo.directionId;
+  if (dep.destination.empty() && !tripInfo.headsign.empty()) {
+    dep.destination = tripInfo.headsign;
+  }
+}
+
+}  // namespace
 
 std::vector<Route> StaClient::fetchDepartures(const std::string& stopCode) {
   // Every failure path here returns {} the same way -- to main.cpp, "STA had
@@ -79,6 +106,12 @@ std::vector<Route> StaClient::fetchDepartures(const std::string& stopCode) {
       Serial.printf("[StaClient] STA feed did not parse (%u bytes received)\n",
                     static_cast<unsigned>(response.body.size()));
     return {};
+  }
+
+  if (sdStore_ != nullptr) {
+    for (StaDeparture& dep : departures) {
+      enrichFromSd(*sdStore_, dep);
+    }
   }
 
   if (Serial)
