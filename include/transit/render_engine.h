@@ -65,12 +65,23 @@ class RenderEngine {
   // (i.e. what a full-screen target.fill(Rect{0, 0, screenWidth, screenHeight}, ...)
   // covers). DrawTarget itself exposes no width/height accessor -- only the
   // concrete freeink::ui::DisplayTarget does (logicalWidth()/logicalHeight())
-  // -- so the caller supplies them explicitly; both default to the X4 panel's
-  // native 800x480, drawn with Orientation::LandscapeCounterClockwise
-  // (main.cpp's construction), so no caller of the real hardware path needs
-  // to pass them.
+  // -- so the caller supplies them explicitly. Defaults are the X4 panel's
+  // native landscape 800x480; main.cpp's real hardware path now passes
+  // displayTarget.logicalWidth()/logicalHeight() explicitly instead of
+  // relying on these defaults, since ConfigStore::displayPortrait() can swap
+  // them to 480x800 at runtime -- see setScreenSize() below for how a
+  // runtime orientation change is applied to an already-constructed engine.
   explicit RenderEngine(freeink::ui::DrawTarget& target, FramePresenter& presenter, IconCache& iconCache,
                         int16_t screenWidth = 800, int16_t screenHeight = 480);
+
+  // Runtime orientation change (docs/CONFIG_AND_STATE.md's display_portrait
+  // setting, changed via SetupFlow::runSettingsPortal()): call this with the
+  // DrawTarget's new logicalWidth()/logicalHeight() after the caller has
+  // already called target.setOrientation() on the same concrete
+  // freeink::ui::DisplayTarget passed to the constructor above -- this just
+  // updates the layout math's notion of screen size, it doesn't touch the
+  // target itself.
+  void setScreenSize(int16_t screenWidth, int16_t screenHeight);
 
   // Lays out and draws one full departure-board frame (status header + one
   // row per DirectionBoard entry, each row's departures rendered per

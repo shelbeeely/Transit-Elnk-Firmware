@@ -63,16 +63,44 @@ class SetupFlow {
   // configStore.isProvisioned() would return true.
   bool runFirstTimeSetup();
 
+  // Same AP + captive-portal machinery as runFirstTimeSetup(), but serves a
+  // minimal settings-only page (currently just display orientation,
+  // docs/CONFIG_AND_STATE.md's display_portrait) instead of the Wi-Fi/API
+  // key/stop wizard — so an already-provisioned board can have a setting
+  // changed without redoing first-run setup from scratch. main.cpp is
+  // responsible for deciding when to call this (a deliberate long-hold of
+  // the power button at boot, not a normal wake) and for re-orienting its
+  // DrawTarget/RenderEngine afterward if this returns true (see
+  // RenderEngine::setScreenSize()). Returns true if a setting was actually
+  // changed and saved, false if the portal timed out/was left untouched.
+  bool runSettingsPortal();
+
  private:
   // Connection state for the STA interface while the AP portal is up. The
   // AP interface itself is never touched by this — WIFI_AP_STA keeps the
   // portal reachable throughout, connect attempts/failures only affect STA.
   enum class WifiConnectState { kIdle, kConnecting, kConnected, kFailed };
 
+  // Which page startPortal()'s shared AP/DNS/web-server machinery serves at
+  // "/" — set by runFirstTimeSetup()/runSettingsPortal() before startPortal(),
+  // read by handleRoot().
+  enum class PortalMode { kFirstRun, kSettings };
+
   void startPortal();
   void stopPortal();
   void pollWifiConnectState();
   void touchActivity();
+
+  // Guard for the first-run wizard's handlers (handleScan/handleConnect/
+  // handleApiKey/handleStopSearch/handleStopSelect): startPortal() keeps all
+  // routes registered regardless of portalMode_, so each of those must
+  // refuse to act while runSettingsPortal() is showing the settings-only
+  // page — otherwise a client still holding the first-run page (or one that
+  // just guesses the endpoints) could overwrite Wi-Fi credentials, the API
+  // key, or the stop pick during what's presented as an orientation-only
+  // change. Sends a 403 JSON response and returns false when not in
+  // kFirstRun; callers return immediately in that case.
+  bool requireFirstRunMode();
 
   // WebServer route handlers (see setup_flow.cpp for the served page/JSON
   // shapes). All hang off `this` via lambdas registered in startPortal().
@@ -83,6 +111,8 @@ class SetupFlow {
   void handleApiKey();
   void handleStopSearch();
   void handleStopSelect();
+  void handleGetOrientation();
+  void handleSetOrientation();
   void handleCaptiveRedirect();
   void handleNotFound();
 
@@ -93,12 +123,20 @@ class SetupFlow {
   DNSServer dnsServer_;
   WebServer server_;
 
+  PortalMode portalMode_ = PortalMode::kFirstRun;
+
   WifiConnectState wifiConnectState_ = WifiConnectState::kIdle;
   uint32_t wifiConnectStartMs_ = 0;
   std::string pendingSsid_;
   std::string pendingPassword_;
 
   uint32_t lastActivityMs_ = 0;
+
+  // Set by handleSetOrientation(), read by runSettingsPortal()'s loop to
+  // know when to show a confirmation and exit — mirrors how
+  // runFirstTimeSetup() watches configStore_.isProvisioned() for the same
+  // "something was just saved, wrap up" purpose.
+  bool settingsSaved_ = false;
 
   // Cached between POST /stopsearch and POST /stopselect (the page refers
   // back to a search result by index rather than resending the full stop).

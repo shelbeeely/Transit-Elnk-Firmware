@@ -126,4 +126,7 @@ void ConfigStore::setTimeFormat(const std::string& format) {
 std::string ConfigStore::locale() { return backend_.getString("locale", ""); }
 void ConfigStore::setLocale(const std::string& locale) { backend_.setString("locale", locale); }
 
+bool ConfigStore::displayPortrait() { return backend_.getBool("portrait", false); }
+void ConfigStore::setDisplayPortrait(bool portrait) { backend_.setBool("portrait", portrait); }
+
 }  // namespace transit

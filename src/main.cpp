@@ -14,7 +14,6 @@
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
 #include <FreeInkUIDisplayTarget.h>
-#include <PowerManager.h>
 #include <WiFi.h>
 #include <time.h>
 
@@ -88,12 +87,39 @@ int minutesSinceLocalMidnight(int64_t nowEpoch) {
   return timeInfo.tm_hour * 60 + timeInfo.tm_min;
 }
 
+// How long the power button must be held at boot to request the settings
+// portal (SetupFlow::runSettingsPortal()) instead of a normal wake cycle.
+// Long enough that the ordinary "press to wake" tap never triggers it.
+constexpr uint32_t kSettingsHoldMs = 3000;
+
+// Absorbs the button press that woke the board (the same raw-GPIO-poll
+// approach as freeink::PowerManager::waitForPowerButtonRelease(), which this
+// replaces) while also classifying whether this was a deliberate long-hold
+// requesting the settings portal rather than a normal wake tap. Blocks until
+// the button is released either way. Reads BoardConfig::ACTIVE.input.power
+// directly rather than pulling in InputManager, which brings up touch-panel
+// and ADC-attenuation machinery this boot-time check has no use for.
+bool waitForBootButtonAndCheckSettingsHold() {
+  const int8_t pin = BoardConfig::ACTIVE.input.power;
+  if (pin < 0) return false;
+  const bool activeHigh = BoardConfig::ACTIVE.input.powerActiveHigh;
+
+  pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+  const int pressedLevel = activeHigh ? HIGH : LOW;
+
+  uint32_t pressStartMs = millis();
+  while (digitalRead(pin) == pressedLevel) {
+    delay(50);
+  }
+  return millis() - pressStartMs >= kSettingsHoldMs;
+}
+
 }  // namespace
 
 void setup() {
   BoardConfig::holdPowerRails();
   BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
-  freeink::PowerManager::waitForPowerButtonRelease();
+  bool enterSettingsRequested = waitForBootButtonAndCheckSettingsHold();
 
   g_display.begin();
 
@@ -101,16 +127,19 @@ void setup() {
   // reason apiClient below is: they read real hardware state
   // (g_display.getFrameBuffer() et al.) at construction, which must happen
   // after g_display.begin() above, not at static-init time. Explicit
-  // LandscapeCounterClockwise (native): the X4's panel is landscape-native
-  // (800x480), and this is a standing board, not a hand-held reader --
-  // DisplayTarget's default orientation heuristic (auto-Portrait for a
-  // landscape-native panel, meant for e-readers held tall) would rotate the
-  // whole layout 90 degrees.
+  // orientation, not DisplayTarget's default heuristic (auto-Portrait for a
+  // landscape-native panel, meant for e-readers held tall) -- this is a
+  // standing board, and ConfigStore::displayPortrait() (set via
+  // SetupFlow::runSettingsPortal()) decides which way it stands.
+  // LandscapeCounterClockwise is the X4 panel's native orientation
+  // (800x480); Portrait rotates it 90 degrees (480x800).
   fui::DisplayTarget displayTarget(g_display.getFrameBuffer(), g_display.getDisplayWidth(),
                                    g_display.getDisplayHeight(), g_display.getDisplayWidthBytes(),
-                                   fui::Orientation::LandscapeCounterClockwise);
+                                   g_configStore.displayPortrait() ? fui::Orientation::Portrait
+                                                                    : fui::Orientation::LandscapeCounterClockwise);
   EInkDisplayPresenter presenter(g_display);
-  RenderEngine renderEngine(displayTarget, presenter, g_iconCache);
+  RenderEngine renderEngine(displayTarget, presenter, g_iconCache, displayTarget.logicalWidth(),
+                            displayTarget.logicalHeight());
 
   // TransitApiClient is local, not global: it reads the (possibly still
   // empty, pre-setup) API key at construction, which must happen after
@@ -120,6 +149,19 @@ void setup() {
   if (!g_configStore.isProvisioned()) {
     SetupFlow setupFlow(g_configStore, apiClient, renderEngine);
     setupFlow.runFirstTimeSetup();
+  } else if (enterSettingsRequested) {
+    // A deliberate long-hold of the power button at boot on an
+    // already-provisioned board, not a normal wake -- offer the settings
+    // portal instead of fetching/rendering the departure board this cycle.
+    SetupFlow setupFlow(g_configStore, apiClient, renderEngine);
+    if (setupFlow.runSettingsPortal()) {
+      // Orientation may have changed -- re-orient the same DisplayTarget and
+      // tell renderEngine its new logical dimensions before anything below
+      // draws with it.
+      displayTarget.setOrientation(g_configStore.displayPortrait() ? fui::Orientation::Portrait
+                                                                    : fui::Orientation::LandscapeCounterClockwise);
+      renderEngine.setScreenSize(displayTarget.logicalWidth(), displayTarget.logicalHeight());
+    }
   }
 
   if (!g_configStore.isProvisioned()) {

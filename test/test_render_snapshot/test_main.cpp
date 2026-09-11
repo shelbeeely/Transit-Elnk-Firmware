@@ -176,6 +176,68 @@ void test_departure_board_snapshot_paints_a_nontrivial_frame() {
   TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board.png");
 }
 
+// ConfigStore::displayPortrait(): main.cpp swaps to portrait by constructing
+// the real DisplayTarget with Orientation::Portrait (whose logicalWidth()/
+// logicalHeight() come back swapped, 480x800 instead of 800x480) and calling
+// RenderEngine::setScreenSize() with those swapped dimensions. This exercises
+// the same swap against HostRasterTarget to confirm the layout (which reads
+// only screenWidth_/screenHeight_, never a hardcoded 800/480) actually
+// reflows into a taller-than-wide frame instead of clipping/overflowing, and
+// dumps a real portrait PNG to look at.
+void test_departure_board_renders_correctly_in_portrait() {
+  constexpr int16_t kPortraitWidth = 480;
+  constexpr int16_t kPortraitHeight = 800;
+  transit_test::HostRasterTarget target(kPortraitWidth, kPortraitHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kPortraitWidth, kPortraitHeight);
+
+  engine.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+
+  TEST_ASSERT_EQUAL_INT(1, presenter.presentCount);
+  TEST_ASSERT_TRUE_MESSAGE(target.hasVisibleContent(/*minDistinctSamples=*/2),
+                           "portrait departure board should paint more than one gray level");
+
+  const std::vector<uint8_t>& pixels = target.pixels();
+  const int16_t w = target.width();
+  const int16_t h = target.height();
+  TEST_ASSERT_EQUAL_INT(kPortraitWidth, w);
+  TEST_ASSERT_EQUAL_INT(kPortraitHeight, h);
+
+  // Nothing should paint past the frame's actual width/height -- a real bug
+  // this test would catch is layout math that still assumes screenWidth_ is
+  // always >= screenHeight_ (e.g. a badge rect computed from the wrong axis)
+  // and ends up writing out of bounds. HostRasterTarget's own buffer is
+  // exactly w*h, so an out-of-range plot would already have been caught by a
+  // crash/ASan failure before this point; this just double-checks the
+  // reported dimensions match what was requested.
+  TEST_ASSERT_EQUAL_UINT32(static_cast<size_t>(w) * static_cast<size_t>(h), pixels.size());
+
+  // Same footer-visibility/no-overlap invariant as the landscape test below,
+  // re-checked here because the footer's own width (screenWidth_ - 2*kMargin)
+  // is much narrower in portrait -- confirms the badge still fits and isn't
+  // clipped by the narrower frame.
+  auto rowHasInk = [&](int16_t y) {
+    for (int16_t x = 0; x < w; ++x) {
+      if (pixels[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) return true;
+    }
+    return false;
+  };
+  int16_t footerInkTop = -1;
+  for (int16_t y = static_cast<int16_t>(h - 1); y >= 0; --y) {
+    if (rowHasInk(y)) {
+      footerInkTop = y;
+    } else if (footerInkTop >= 0) {
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(footerInkTop >= 0, "expected the footer badge near the bottom edge in portrait too");
+
+  const std::string path = snapshotPath("departure_board_portrait.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_portrait.png");
+}
+
 // Transit API ToS compliance (docs/DEPLOYMENT_OPS.md): renderDepartureBoard()
 // must always show a "Powered by Transit" attribution, small/unobtrusive but
 // genuinely visible -- not overlapping the departure rows above it, whatever
@@ -289,6 +351,7 @@ void test_setup_list_snapshot_paints_a_nontrivial_frame() {
 int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_departure_board_snapshot_paints_a_nontrivial_frame);
+  RUN_TEST(test_departure_board_renders_correctly_in_portrait);
   RUN_TEST(test_departure_board_footer_is_visible_and_does_not_overlap_rows);
   RUN_TEST(test_departure_board_empty_shows_placeholder_text);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);

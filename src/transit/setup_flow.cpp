@@ -245,6 +245,73 @@ pollStatus();
 </body></html>
 )HTML";
 
+// Settings-only page: served instead of kSetupPageHtml when portalMode_ ==
+// kSettings (runSettingsPortal()). Deliberately much smaller than the
+// first-run wizard above -- one setting today (display orientation), no
+// Wi-Fi/API-key/stop steps to re-walk. Add future settings as additional
+// <section>s + endpoints the same way, rather than growing this into a copy
+// of the first-run wizard.
+const char kSettingsPageHtml[] PROGMEM = R"HTML(<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit Board Settings</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:480px;margin:1.5em auto;padding:0 1em;color:#222}
+h1{font-size:1.2em}
+section{display:none;margin-bottom:1.5em}
+section.active{display:block}
+label{display:block;margin:.8em 0 .2em}
+select{width:100%;box-sizing:border-box;padding:.5em;font-size:1em}
+button{margin-top:1em;padding:.6em 1.2em;font-size:1em}
+.msg{margin-top:.6em;font-size:.9em}
+.msg.err{color:#b00}
+.msg.ok{color:#0a0}
+</style></head>
+<body>
+<h1>Transit Board Settings</h1>
+
+<section id="step-orientation" class="active">
+<label>Display orientation</label>
+<select id="orientation">
+<option value="landscape">Horizontal (landscape)</option>
+<option value="portrait">Vertical (portrait)</option>
+</select>
+<button onclick="saveOrientation()">Save</button>
+<div id="orientation-msg" class="msg"></div>
+</section>
+
+<section id="step-done">
+<h2>Settings saved</h2>
+<p>Your board will redraw with the new orientation. You can close this page.</p>
+</section>
+
+<script>
+function el(id){return document.getElementById(id);}
+function showStep(id){
+  document.querySelectorAll('section').forEach(function(s){s.classList.remove('active');});
+  el(id).classList.add('active');
+}
+function setMsg(id,text,cls){
+  var m=el(id); m.textContent=text; m.className='msg'+(cls?(' '+cls):'');
+}
+
+fetch('/getorientation').then(function(r){return r.json();}).then(function(s){
+  el('orientation').value = s.portrait ? 'portrait' : 'landscape';
+}).catch(function(){});
+
+function saveOrientation(){
+  var portrait = el('orientation').value === 'portrait';
+  setMsg('orientation-msg','Saving...','');
+  fetch('/setorientation',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'portrait='+(portrait?'1':'0')})
+    .then(function(r){return r.json();}).then(function(res){
+      if(res.ok){ showStep('step-done'); }
+      else { setMsg('orientation-msg',res.message||'Could not save.','err'); }
+    }).catch(function(){ setMsg('orientation-msg','Could not reach the board. Try again.','err'); });
+}
+</script>
+</body></html>
+)HTML";
+
 }  // namespace
 
 SetupFlow::SetupFlow(ConfigStore& configStore, TransitApiClient& apiClient, RenderEngine& renderEngine)
@@ -268,6 +335,8 @@ void SetupFlow::startPortal() {
   server_.on("/apikey", HTTP_POST, [this]() { handleApiKey(); });
   server_.on("/stopsearch", HTTP_POST, [this]() { handleStopSearch(); });
   server_.on("/stopselect", HTTP_POST, [this]() { handleStopSelect(); });
+  server_.on("/getorientation", HTTP_GET, [this]() { handleGetOrientation(); });
+  server_.on("/setorientation", HTTP_POST, [this]() { handleSetOrientation(); });
 
   // Common captive-portal probe URLs (Android/Chrome, iOS/macOS, Windows) —
   // redirecting these to "/" is what makes phones auto-open the portal
@@ -315,11 +384,48 @@ void SetupFlow::pollWifiConnectState() {
 
 void SetupFlow::handleRoot() {
   touchActivity();
-  server_.send_P(200, "text/html", kSetupPageHtml);
+  if (portalMode_ == PortalMode::kSettings) {
+    server_.send_P(200, "text/html", kSettingsPageHtml);
+  } else {
+    server_.send_P(200, "text/html", kSetupPageHtml);
+  }
+}
+
+void SetupFlow::handleGetOrientation() {
+  touchActivity();
+  JsonDocument doc;
+  doc["portrait"] = configStore_.displayPortrait();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleSetOrientation() {
+  touchActivity();
+  std::string portraitArg = server_.hasArg("portrait") ? server_.arg("portrait").c_str() : "";
+  bool portrait = portraitArg == "1" || portraitArg == "true";
+  configStore_.setDisplayPortrait(portrait);
+  settingsSaved_ = true;
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+// The Wi-Fi/API-key/stop wizard's endpoints stay registered even while
+// runSettingsPortal() is up (startPortal() is shared machinery — see its
+// comment), so each of those handlers must refuse to act when portalMode_
+// isn't kFirstRun. Without this, someone joined to the open setup AP (its
+// only access control is physical proximity, per this file's header
+// comment) could POST to e.g. /apikey or /connect during what the settings
+// page presents as an orientation-only change and silently overwrite
+// Wi-Fi credentials, the API key, or the stop pick.
+bool SetupFlow::requireFirstRunMode() {
+  if (portalMode_ == PortalMode::kFirstRun) return true;
+  server_.send(403, "application/json", "{\"ok\":false,\"message\":\"Not available.\"}");
+  return false;
 }
 
 void SetupFlow::handleScan() {
   touchActivity();
+  if (!requireFirstRunMode()) return;
   // Skip the actual radio scan while a STA connect attempt (e.g. the
   // background resume-with-saved-credentials one runFirstTimeSetup() may
   // have kicked off) is in flight: scanning on the same radio mid-association
@@ -344,6 +450,7 @@ void SetupFlow::handleScan() {
 
 void SetupFlow::handleConnect() {
   touchActivity();
+  if (!requireFirstRunMode()) return;
   std::string ssid = server_.hasArg("ssid") ? server_.arg("ssid").c_str() : "";
   if (ssid.empty()) {
     server_.send(400, "application/json", "{\"ok\":false,\"message\":\"SSID required\"}");
@@ -384,6 +491,7 @@ void SetupFlow::handleStatus() {
 
 void SetupFlow::handleApiKey() {
   touchActivity();
+  if (!requireFirstRunMode()) return;
   std::string key = server_.hasArg("key") ? server_.arg("key").c_str() : "";
   if (key.empty()) {
     server_.send(200, "application/json", "{\"ok\":false,\"message\":\"The key can't be empty.\"}");
@@ -416,6 +524,7 @@ void SetupFlow::handleApiKey() {
 
 void SetupFlow::handleStopSearch() {
   touchActivity();
+  if (!requireFirstRunMode()) return;
   std::string latText = server_.hasArg("lat") ? server_.arg("lat").c_str() : "";
   std::string lonText = server_.hasArg("lon") ? server_.arg("lon").c_str() : "";
   std::string query = server_.hasArg("query") ? server_.arg("query").c_str() : "";
@@ -462,6 +571,7 @@ void SetupFlow::handleStopSearch() {
 
 void SetupFlow::handleStopSelect() {
   touchActivity();
+  if (!requireFirstRunMode()) return;
   std::string indexText = server_.hasArg("index") ? server_.arg("index").c_str() : "";
   // strtol, not atoi: atoi silently returns 0 for non-numeric input, which
   // would look like a valid "first result" pick instead of a parse failure.
@@ -559,6 +669,41 @@ bool SetupFlow::runFirstTimeSetup() {
 
   stopPortal();
   return configStore_.isProvisioned();
+}
+
+bool SetupFlow::runSettingsPortal() {
+  portalMode_ = PortalMode::kSettings;
+  renderEngine_.renderSetupPrompt(
+      "Settings",
+      std::string("Connect your phone to Wi-Fi\nnetwork \"") + kApSsid +
+          "\",\nthen visit http://192.168.4.1");
+  startPortal();
+
+  settingsSaved_ = false;
+  uint32_t savedAtMs = 0;
+  while (true) {
+    dnsServer_.processNextRequest();
+    server_.handleClient();
+
+    if (settingsSaved_) {
+      if (savedAtMs == 0) {
+        savedAtMs = millis();
+        renderEngine_.renderSetupPrompt("Settings saved", "Applying your changes...");
+      } else if (millis() - savedAtMs > kProvisionedLingerMs) {
+        break;
+      }
+    } else if (millis() - lastActivityMs_ > kSetupIdleTimeoutMs) {
+      renderEngine_.renderSetupPrompt("Settings paused",
+                                       "No activity on the settings page.\nNo changes were made.");
+      break;
+    }
+
+    delay(10);
+  }
+
+  stopPortal();
+  portalMode_ = PortalMode::kFirstRun;
+  return settingsSaved_;
 }
 
 }  // namespace transit

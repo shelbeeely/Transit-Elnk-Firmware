@@ -112,6 +112,13 @@ class ConfigStore {
   std::string locale();
   void setLocale(const std::string& locale);
 
+  // Display orientation: false = landscape (the X4 panel's native
+  // orientation, default), true = portrait. See render_engine.h/main.cpp
+  // for how this selects freeink::ui::Orientation. Changeable after initial
+  // setup via SetupFlow::runSettingsPortal(), not just first-run setup.
+  bool displayPortrait();
+  void setDisplayPortrait(bool portrait);
+
  private:
   ConfigBackend& backend_;
 };

@@ -79,6 +79,7 @@ field, since `API_KEY` isn't part of that particular sample); in production
 | `route_order[]` | TV's `routeOrder` cookie array | array of `global_route_id` strings | |
 | `time_format` | TV's `timeFormat` (`'HH:mm'` / `'hh:mm A'`) | enum | Cosmetic — the firmware shows countdown minutes, not clock time, in most views; keep if a clock-time view is ever added |
 | `locale` | neither repo sets `locale`/`Accept-Language` today | string | New capability from v4, optional |
+| `display_portrait` | n/a (no web equivalent — both existing apps run in a browser tab, not a fixed physical panel) | bool | **New setting.** `false` (default) = landscape, the X4 panel's native orientation; `true` = portrait (rotated 90°). Not part of the first-run wizard — changed via the settings portal (a long power-button hold at boot on an already-provisioned board — see `SetupFlow::runSettingsPortal()`) |
 
 NVS/Preferences key names are capped at 15 characters
 (`NVS_KEY_NAME_MAX_SIZE` is 16, including the null terminator) — a key
@@ -89,7 +90,8 @@ source of truth for actual key strings, and abbreviates where the proposed
 name is too long: `refresh_interval_min` → `refresh_int_min`,
 `sleep_window_start`/`sleep_window_end` → `sleep_win_start`/`sleep_win_end`,
 `departure_window_min` → `dep_win_min`, `max_departures_per_direction` →
-`max_dep_per_dir`, `static_direction` → `static_dir`. `hidden_routes[]` /
+`max_dep_per_dir`, `static_direction` → `static_dir`, `display_portrait` →
+`portrait`. `hidden_routes[]` /
 `route_order[]` are each stored as one comma-joined string under
 `hidden_routes` / `route_order` respectively (NVS has no native array
 type) — see the accessors' comments in `config_store.cpp`.

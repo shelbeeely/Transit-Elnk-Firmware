@@ -391,6 +391,11 @@ RenderEngine::RenderEngine(freeink::ui::DrawTarget& target, FramePresenter& pres
       screenWidth_(screenWidth),
       screenHeight_(screenHeight) {}
 
+void RenderEngine::setScreenSize(int16_t screenWidth, int16_t screenHeight) {
+  screenWidth_ = screenWidth;
+  screenHeight_ = screenHeight;
+}
+
 void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board, const BoardStatus& status) {
   target_.fill(fui::Rect{0, 0, screenWidth_, screenHeight_}, fui::Paint::solid(fui::Color::White));
 
