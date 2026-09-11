@@ -45,6 +45,24 @@ struct BoardStatus {
   bool wifiOk = true;
   bool lastFetchFailed = false;
   int64_t lastUpdatedEpoch = 0;
+
+  // One line per configured preset trip (trip_planner.h's PresetTripPlan,
+  // pre-formatted by main.cpp so this module stays decoupled from that
+  // module's types) -- e.g. "leave by 5:42p — 31 → transfer Division/
+  // Sprague ~5:58p → 32 → transfer ~6:15p → 97", or a fallback message like
+  // "no upcoming trip found". Drawn as a compact strip above the
+  // attribution footer, only when non-empty -- see renderDepartureBoard()'s
+  // file comment on layout. An empty vector (no presets configured) draws
+  // nothing extra and leaves the departure-board layout pixel-identical to
+  // before this field existed.
+  struct PresetTripSummaryLine {
+    std::string presetName;  // "Home" / "Work"
+    std::string text;
+    bool leaveNow = false;   // reuses the same urgency treatment as a chip
+                              // whose departure is imminent -- see
+                              // formatDepartureChip()'s urgency handling.
+  };
+  std::vector<PresetTripSummaryLine> presetTrips;
 };
 
 // Pushes a fully-drawn frame to the physical panel. RenderEngine only draws
@@ -83,6 +101,21 @@ class RenderEngine {
   // target itself.
   void setScreenSize(int16_t screenWidth, int16_t screenHeight);
 
+  // Reduced-clutter mode (ConfigStore::focusMode(), changed via
+  // SetupFlow::runSettingsPortal()): when enabled, renderDepartureBoard()
+  // draws only the 1-2 DirectionBoard entries with the soonest upcoming
+  // departure (ignoring sortByTime/routeOrder -- focus mode's whole point
+  // is "just the next relevant thing," not the user's normal ordering
+  // preference) at a much larger size, instead of the full multi-route
+  // board. Note: FreeInkUI's DrawTarget has no font-size-scaling primitive
+  // (only a fixed set of registered BitmapFont slots, none larger than the
+  // default Noto Sans here -- see render_engine.cpp), so "larger" here
+  // means a much bigger drawn area (row height/width, centered, bold) at
+  // the same glyph size, not literally bigger characters; a second,
+  // larger BitmapFont asset (like sticky-reminders' gen_font.py-generated
+  // font) would be needed for that and isn't added here.
+  void setFocusMode(bool enabled);
+
   // Lays out and draws one full departure-board frame (status header + one
   // row per DirectionBoard entry, each row's departures rendered per
   // docs/UI_BEHAVIOR.md's badge rules) and pushes it to the panel with a
@@ -102,6 +135,7 @@ class RenderEngine {
   IconCache& iconCache_;
   int16_t screenWidth_;
   int16_t screenHeight_;
+  bool focusMode_ = false;
 };
 
 }  // namespace transit

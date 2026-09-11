@@ -40,6 +40,76 @@ std::vector<std::string> splitCsv(const std::string& joined) {
   return values;
 }
 
+// Best-effort int parse with no exceptions (this codebase avoids them —
+// see joinCsv/splitCsv above for the same "never throw" style). Returns
+// defaultValue on anything that isn't a valid (optionally signed) integer.
+int parseIntOr(const std::string& text, int defaultValue) {
+  if (text.empty()) return defaultValue;
+  size_t i = 0;
+  bool negative = false;
+  if (text[0] == '-' || text[0] == '+') {
+    negative = text[0] == '-';
+    i = 1;
+  }
+  if (i >= text.size()) return defaultValue;
+  int value = 0;
+  for (; i < text.size(); ++i) {
+    if (text[i] < '0' || text[i] > '9') return defaultValue;
+    value = value * 10 + (text[i] - '0');
+  }
+  return negative ? -value : value;
+}
+
+// One preset leg = "routeId,boardStopId,alightStopId,directionId"; legs
+// joined with '|'. IDs are opaque "agency:id" strings that never contain
+// ',' or '|' (same reasoning as joinCsv's comment above), so this is safe.
+std::string encodeLeg(const TripLegConfig& leg) {
+  return leg.routeId + "," + leg.boardStopId + "," + leg.alightStopId + "," +
+         std::to_string(leg.directionId);
+}
+
+TripLegConfig decodeLeg(const std::string& encoded) {
+  std::vector<std::string> fields = splitCsv(encoded);
+  TripLegConfig leg;
+  if (fields.size() > 0) leg.routeId = fields[0];
+  if (fields.size() > 1) leg.boardStopId = fields[1];
+  if (fields.size() > 2) leg.alightStopId = fields[2];
+  if (fields.size() > 3) leg.directionId = parseIntOr(fields[3], -1);
+  return leg;
+}
+
+std::string encodeLegs(const std::vector<TripLegConfig>& legs) {
+  std::string joined;
+  for (size_t i = 0; i < legs.size(); ++i) {
+    if (i > 0) joined += '|';
+    joined += encodeLeg(legs[i]);
+  }
+  return joined;
+}
+
+std::vector<TripLegConfig> decodeLegs(const std::string& joined) {
+  std::vector<TripLegConfig> legs;
+  size_t start = 0;
+  while (start <= joined.size()) {
+    size_t bar = joined.find('|', start);
+    size_t end = (bar == std::string::npos) ? joined.size() : bar;
+    if (end > start) {
+      legs.push_back(decodeLeg(joined.substr(start, end - start)));
+    }
+    if (bar == std::string::npos) break;
+    start = bar + 1;
+  }
+  return legs;
+}
+
+const char* presetLegsKey(ConfigStore::PresetId id) {
+  return id == ConfigStore::PresetId::kHome ? "home_legs" : "work_legs";
+}
+
+const char* presetWalkKey(ConfigStore::PresetId id) {
+  return id == ConfigStore::PresetId::kHome ? "home_walk_min" : "work_walk_min";
+}
+
 }  // namespace
 
 ConfigStore::ConfigStore(ConfigBackend& backend) : backend_(backend) {}
@@ -131,5 +201,25 @@ void ConfigStore::setDisplayPortrait(bool portrait) { backend_.setBool("portrait
 
 std::string ConfigStore::staStopCode() { return backend_.getString("sta_stop", ""); }
 void ConfigStore::setStaStopCode(const std::string& stopCode) { backend_.setString("sta_stop", stopCode); }
+
+std::vector<TripLegConfig> ConfigStore::presetLegs(PresetId id) {
+  return decodeLegs(backend_.getString(presetLegsKey(id), ""));
+}
+void ConfigStore::setPresetLegs(PresetId id, const std::vector<TripLegConfig>& legs) {
+  backend_.setString(presetLegsKey(id), encodeLegs(legs));
+}
+
+int ConfigStore::presetWalkToFirstStopMin(PresetId id) {
+  return backend_.getInt(presetWalkKey(id), 0);
+}
+void ConfigStore::setPresetWalkToFirstStopMin(PresetId id, int minutes) {
+  backend_.setInt(presetWalkKey(id), minutes);
+}
+
+int ConfigStore::transferBufferMin() { return backend_.getInt("xfer_buf_min", 3); }
+void ConfigStore::setTransferBufferMin(int minutes) { backend_.setInt("xfer_buf_min", minutes); }
+
+bool ConfigStore::focusMode() { return backend_.getBool("focus_mode", false); }
+void ConfigStore::setFocusMode(bool enabled) { backend_.setBool("focus_mode", enabled); }
 
 }  // namespace transit

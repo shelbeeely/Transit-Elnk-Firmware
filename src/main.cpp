@@ -17,6 +17,9 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include <algorithm>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 #include "transit/api_client.h"
@@ -27,6 +30,7 @@
 #include "transit/render_engine.h"
 #include "transit/setup_flow.h"
 #include "transit/sta_client.h"
+#include "transit/trip_planner.h"
 #include "transit/ui_logic.h"
 
 using namespace transit;
@@ -87,6 +91,74 @@ int minutesSinceLocalMidnight(int64_t nowEpoch) {
   time_t nowTimeT = static_cast<time_t>(nowEpoch);
   localtime_r(&nowTimeT, &timeInfo);
   return timeInfo.tm_hour * 60 + timeInfo.tm_min;
+}
+
+// --- Preset "Home"/"Work" trip planning (trip_planner.h) --------------------
+
+void addStopIdIfAbsent(std::vector<std::string>& ids, const std::string& id) {
+  if (id.empty()) return;
+  if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+}
+
+PresetConfig loadPresetConfig(ConfigStore& configStore, ConfigStore::PresetId id, const std::string& name) {
+  PresetConfig preset;
+  preset.presetName = name;
+  preset.legs = configStore.presetLegs(id);
+  preset.walkToFirstStopMin = configStore.presetWalkToFirstStopMin(id);
+  preset.transferBufferMin = configStore.transferBufferMin();
+  return preset;
+}
+
+// 12-hour clock, no leading zero, lowercase am/pm suffix (e.g. "5:42p") --
+// matches formatDepartureChip()'s general style (render_engine.cpp) without
+// pulling that file's own formatClock() (24-hour, header-clock-specific) in
+// here. ASCII only, deliberately: the bundled Noto Sans subset has no glyph
+// for non-ASCII punctuation and silently renders a tofu box for anything it
+// doesn't have -- confirmed by hand while building render_engine's preset
+// strip (see that file's test for the same note re: arrows below).
+void formatClockLabel(int64_t epochSeconds, char* buf, size_t bufLen) {
+  if (epochSeconds <= 0) {
+    snprintf(buf, bufLen, "--:--");
+    return;
+  }
+  time_t t = static_cast<time_t>(epochSeconds);
+  struct tm tmVal{};
+  localtime_r(&t, &tmVal);
+  int hour12 = tmVal.tm_hour % 12;
+  if (hour12 == 0) hour12 = 12;
+  snprintf(buf, bufLen, "%d:%02d%s", hour12, tmVal.tm_min, tmVal.tm_hour < 12 ? "a" : "p");
+}
+
+// Turns a computed PresetTripPlan into the one line RenderEngine draws for
+// it (render_engine.h's BoardStatus::PresetTripSummaryLine). ASCII "->" for
+// leg separators, never a Unicode arrow -- see formatClockLabel()'s comment.
+BoardStatus::PresetTripSummaryLine formatPresetSummaryLine(const PresetTripPlan& plan, int64_t nowEpoch) {
+  BoardStatus::PresetTripSummaryLine line;
+  line.presetName = plan.presetName;
+
+  if (!plan.found) {
+    line.text = plan.fallbackMessage;
+    line.leaveNow = false;
+    return line;
+  }
+
+  char leaveByClock[8];
+  formatClockLabel(plan.leaveByEpoch, leaveByClock, sizeof(leaveByClock));
+  std::string text = std::string("leave by ") + leaveByClock;
+  for (size_t i = 0; i < plan.legs.size(); ++i) {
+    const PlannedLeg& leg = plan.legs[i];
+    const std::string& label = !leg.routeShortName.empty() ? leg.routeShortName : leg.routeId;
+    if (i == 0) {
+      text += " - " + label;
+    } else {
+      char transferClock[8];
+      formatClockLabel(plan.legs[i - 1].alightEpoch, transferClock, sizeof(transferClock));
+      text += std::string(" -> transfer ~") + transferClock + " -> " + label;
+    }
+  }
+  line.text = text;
+  line.leaveNow = nowEpoch > 0 && (plan.leaveByEpoch - nowEpoch) / 60 <= 5;
+  return line;
 }
 
 // How long the power button must be held at boot to request the settings
@@ -192,19 +264,65 @@ void setup() {
 
   int64_t nowEpoch = 0;
   std::vector<Route> routes;
+  std::vector<BoardStatus::PresetTripSummaryLine> presetSummaryLines;
   if (wifiOk) {
     nowEpoch = syncTimeAndGetEpoch();
 
+    // Preset "Home"/"Work" trip planning (trip_planner.h) rides along on
+    // this SAME stopDepartures() call rather than issuing its own -- every
+    // leg's boarding/alighting stop_id is folded into the one batched
+    // request (stopDepartures accepts up to 100), so configuring presets
+    // costs zero *additional* Transit API calls per wake, only a bigger
+    // response body. See docs/TRIP_PLANNER.md's call-budget note.
+    PresetConfig homePreset = loadPresetConfig(g_configStore, ConfigStore::PresetId::kHome, "Home");
+    PresetConfig workPreset = loadPresetConfig(g_configStore, ConfigStore::PresetId::kWork, "Work");
+    const bool anyPresetConfigured = !homePreset.legs.empty() || !workPreset.legs.empty();
+
+    std::vector<std::string> stopIds;
+    addStopIdIfAbsent(stopIds, g_configStore.stopId());
+    for (const PresetConfig* preset : {&homePreset, &workPreset}) {
+      for (const TripLegConfig& leg : preset->legs) {
+        addStopIdIfAbsent(stopIds, leg.boardStopId);
+        addStopIdIfAbsent(stopIds, leg.alightStopId);
+      }
+    }
+
     StopDeparturesParams params;
-    params.maxNumDepartures = g_configStore.maxDeparturesPerDirection();
+    // Trip planning needs to see further into each leg stop's schedule than
+    // the main board's own display cap -- this only grows the response
+    // size, not the call count, so it's free against the free-tier budget
+    // (see docs/TRIP_PLANNER.md).
+    params.maxNumDepartures =
+        anyPresetConfigured ? std::max(g_configStore.maxDeparturesPerDirection(), 8)
+                            : g_configStore.maxDeparturesPerDirection();
     params.removeCancelled = true;
 
     StopDeparturesResponse response;
-    bool fetchOk =
-        apiClient.stopDepartures({g_configStore.stopId()}, params, response);
+    bool fetchOk = apiClient.stopDepartures(stopIds, params, response);
     status.lastFetchFailed = !fetchOk;
     if (fetchOk) {
-      routes = response.routeDepartures;
+      // ui_logic::buildDepartureBoard() assumes it's handed exactly one
+      // stop's routes -- filter the combined multi-stop response down to
+      // the main stop before handing it off, or preset-leg-only stops'
+      // routes would leak onto the main departure board.
+      for (const Route& route : response.routeDepartures) {
+        if (route.globalStopId == g_configStore.stopId()) {
+          routes.push_back(route);
+        }
+      }
+
+      // planPresetTrip() gets the FULL unfiltered response across every
+      // queried stop -- main-board display prefs (hiddenRoutes/routeOrder/
+      // departureWindowMin) are irrelevant to, and must not silently break,
+      // a preset the user explicitly configured.
+      if (!homePreset.legs.empty()) {
+        presetSummaryLines.push_back(
+            formatPresetSummaryLine(planPresetTrip(response.routeDepartures, homePreset, nowEpoch), nowEpoch));
+      }
+      if (!workPreset.legs.empty()) {
+        presetSummaryLines.push_back(
+            formatPresetSummaryLine(planPresetTrip(response.routeDepartures, workPreset, nowEpoch), nowEpoch));
+      }
     }
 
     // STA is a second, optional data source (docs/CONFIG_AND_STATE.md's
@@ -225,6 +343,7 @@ void setup() {
     status.lastFetchFailed = true;
   }
   status.lastUpdatedEpoch = nowEpoch;
+  status.presetTrips = presetSummaryLines;
 
   UiSettings uiSettings;
   uiSettings.departureWindowMin = g_configStore.departureWindowMin();
@@ -235,6 +354,7 @@ void setup() {
   uiSettings.routeOrder = g_configStore.routeOrder();
 
   std::vector<DirectionBoard> board = buildDepartureBoard(routes, uiSettings, nowEpoch);
+  renderEngine.setFocusMode(g_configStore.focusMode());
   renderEngine.renderDepartureBoard(board, status);
 
   SleepWindow sleepWindow;

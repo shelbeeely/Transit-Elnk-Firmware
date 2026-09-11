@@ -309,6 +309,178 @@ void test_departure_board_empty_shows_placeholder_text() {
   TEST_ASSERT_TRUE(target.hasVisibleContent(2));
 }
 
+// Regression check for BoardStatus::presetTrips' additive layout change
+// (render_engine.h): an empty presetTrips (the default, same as
+// makeSampleStatus() below) must produce the exact same frame as before
+// this field existed. All the pre-existing snapshot tests above already
+// call renderDepartureBoard() with the default empty presetTrips and still
+// pass unmodified, which is itself that regression check -- this test adds
+// an explicit pixel-identical comparison between two such renders (one
+// through a BoardStatus built the old way, one through a BoardStatus that
+// explicitly clears presetTrips) so the invariant is asserted directly
+// rather than only implied by other tests happening to still pass.
+void test_empty_preset_trips_matches_baseline_layout() {
+  transit_test::HostRasterTarget targetA(kScreenWidth, kScreenHeight);
+  NoopPresenter presenterA;
+  FakeHttpTransport transportA;
+  IconCache iconCacheA(transportA);
+  RenderEngine engineA(targetA, presenterA, iconCacheA, kScreenWidth, kScreenHeight);
+  engineA.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+
+  transit_test::HostRasterTarget targetB(kScreenWidth, kScreenHeight);
+  NoopPresenter presenterB;
+  FakeHttpTransport transportB;
+  IconCache iconCacheB(transportB);
+  RenderEngine engineB(targetB, presenterB, iconCacheB, kScreenWidth, kScreenHeight);
+  BoardStatus statusB = makeSampleStatus();
+  statusB.presetTrips.clear();  // explicit, though already empty by default
+  engineB.renderDepartureBoard(makeSampleBoard(), statusB);
+
+  TEST_ASSERT_TRUE_MESSAGE(targetA.pixels() == targetB.pixels(),
+                           "an empty presetTrips should never change the rendered frame");
+}
+
+// BoardStatus::presetTrips (render_engine.h): the strip should paint visible
+// content above the footer without covering it, and a preset configured
+// this cycle should add strictly more ink to the frame than the same board
+// without any presets configured.
+void test_departure_board_with_preset_trips_shows_strip_above_footer() {
+  transit_test::HostRasterTarget baseline(kScreenWidth, kScreenHeight);
+  {
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(baseline, presenter, iconCache, kScreenWidth, kScreenHeight);
+    engine.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+  }
+
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  // ASCII arrows only -- the bundled Noto Sans subset has no glyph for
+  // U+2192 (RIGHTWARDS ARROW) and renders it as a tofu box (confirmed
+  // visually against a snapshot PNG while writing this test); real preset-
+  // summary formatting (main.cpp, not yet wired) must avoid it too.
+  BoardStatus status = makeSampleStatus();
+  status.presetTrips = {
+      {"Home", "leave by 5:42p - 31 -> transfer ~5:58p -> 32", /*leaveNow=*/false},
+      {"Work", "No upcoming trip found", /*leaveNow=*/true},
+  };
+  engine.renderDepartureBoard(makeSampleBoard(), status);
+
+  TEST_ASSERT_EQUAL_INT(1, presenter.presentCount);
+  TEST_ASSERT_TRUE(target.hasVisibleContent(2));
+
+  const std::vector<uint8_t>& pixels = target.pixels();
+  const std::vector<uint8_t>& basePixels = baseline.pixels();
+  size_t inkCount = 0;
+  size_t baseInkCount = 0;
+  for (uint8_t p : pixels) {
+    if (p != 255) ++inkCount;
+  }
+  for (uint8_t p : basePixels) {
+    if (p != 255) ++baseInkCount;
+  }
+  TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(baseInkCount, inkCount,
+                                          "adding preset trip lines should add visible ink to the frame");
+
+  // Footer badge is still present and near the bottom edge, same invariant
+  // as test_departure_board_footer_is_visible_and_does_not_overlap_rows.
+  const int16_t w = target.width();
+  const int16_t h = target.height();
+  auto rowHasInk = [&](int16_t y) {
+    for (int16_t x = 0; x < w; ++x) {
+      if (pixels[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] != 255) return true;
+    }
+    return false;
+  };
+  int16_t footerInkTop = -1;
+  for (int16_t y = static_cast<int16_t>(h - 1); y >= 0; --y) {
+    if (rowHasInk(y)) {
+      footerInkTop = y;
+    } else if (footerInkTop >= 0) {
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(footerInkTop >= 0, "expected the footer badge near the bottom edge with presets shown too");
+
+  const std::string path = snapshotPath("departure_board_with_presets.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_with_presets.png");
+}
+
+// setFocusMode(true) (render_engine.h): still paints a nontrivial frame and
+// still presents exactly once, using the sample board's mix (including the
+// one direction with no upcoming departures, which selectFocusBoards()
+// must skip rather than crash on -- see render_engine.cpp's comment).
+void test_focus_mode_paints_a_nontrivial_frame() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+  engine.setFocusMode(true);
+
+  engine.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+
+  TEST_ASSERT_EQUAL_INT(1, presenter.presentCount);
+  TEST_ASSERT_TRUE_MESSAGE(target.hasVisibleContent(/*minDistinctSamples=*/2),
+                           "focus mode should still paint a visible frame");
+
+  const std::string path = snapshotPath("departure_board_focus_mode.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_focus_mode.png");
+}
+
+// isLeaveNowUrgent()'s bold+stroke treatment (render_engine.cpp): a board
+// whose only departure is imminent (<=5min) should render with strictly
+// more ink than the same board with that departure far in the future, all
+// else equal -- the stroke outline and bold glyphs both add pixels.
+void test_leave_now_urgency_adds_visible_emphasis() {
+  auto makeSingleRouteBoard = [](int64_t departureEpoch) {
+    std::vector<DirectionBoard> board;
+    DirectionBoard route;
+    route.globalRouteId = "R1";
+    route.routeShortName = "1";
+    route.routeDisplayShortName = makeDisplayShortName("bus-1", "1");
+    route.routeColor = "111111";
+    route.routeTextColor = "FFFFFF";
+    route.departures = {makeDeparture("Downtown", departureEpoch)};
+    board.push_back(route);
+    return board;
+  };
+
+  transit_test::HostRasterTarget urgentTarget(kScreenWidth, kScreenHeight);
+  {
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(urgentTarget, presenter, iconCache, kScreenWidth, kScreenHeight);
+    engine.renderDepartureBoard(makeSingleRouteBoard(kNow + 2 * 60), makeSampleStatus());
+  }
+
+  transit_test::HostRasterTarget farTarget(kScreenWidth, kScreenHeight);
+  {
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(farTarget, presenter, iconCache, kScreenWidth, kScreenHeight);
+    engine.renderDepartureBoard(makeSingleRouteBoard(kNow + 45 * 60), makeSampleStatus());
+  }
+
+  size_t urgentInk = 0;
+  size_t farInk = 0;
+  for (uint8_t p : urgentTarget.pixels()) {
+    if (p != 255) ++urgentInk;
+  }
+  for (uint8_t p : farTarget.pixels()) {
+    if (p != 255) ++farInk;
+  }
+  TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(farInk, urgentInk,
+                                          "an imminent departure's bold+stroke chip should add visible ink");
+}
+
 void test_setup_prompt_snapshot_paints_a_nontrivial_frame() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -354,6 +526,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_departure_board_renders_correctly_in_portrait);
   RUN_TEST(test_departure_board_footer_is_visible_and_does_not_overlap_rows);
   RUN_TEST(test_departure_board_empty_shows_placeholder_text);
+  RUN_TEST(test_empty_preset_trips_matches_baseline_layout);
+  RUN_TEST(test_departure_board_with_preset_trips_shows_strip_above_footer);
+  RUN_TEST(test_focus_mode_paints_a_nontrivial_frame);
+  RUN_TEST(test_leave_now_urgency_adds_visible_emphasis);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);
   RUN_TEST(test_setup_list_snapshot_paints_a_nontrivial_frame);
   return UNITY_END();

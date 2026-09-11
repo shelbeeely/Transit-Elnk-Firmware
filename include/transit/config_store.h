@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "transit/trip_planner.h"
+
 namespace transit {
 
 // Minimal typed key/value backend. NVS-backed implementation lives in
@@ -129,6 +131,31 @@ class ConfigStore {
   // an optional add-on rather than something the board needs to function.
   std::string staStopCode();
   void setStaStopCode(const std::string& stopCode);
+
+  // Preset "Home"/"Work" trip planning (see trip_planner.h) — a fixed,
+  // user-configured leg chain per preset (e.g. route 31 A->B, then route 32
+  // B->C), entered via SetupFlow::runSettingsPortal() like STA/orientation
+  // above. Empty legs = that preset not configured (planPresetTrip()
+  // reports "Not configured" for it). Capped at 3 legs by the portal.
+  enum class PresetId { kHome, kWork };
+  std::vector<TripLegConfig> presetLegs(PresetId id);
+  void setPresetLegs(PresetId id, const std::vector<TripLegConfig>& legs);
+
+  // Minutes to walk to the first leg's boarding stop — subtracted from
+  // that leg's departure time to compute the preset's leave-by time.
+  int presetWalkToFirstStopMin(PresetId id);
+  void setPresetWalkToFirstStopMin(PresetId id, int minutes);
+
+  // Shared minimum minutes between a leg's estimated alight time and the
+  // next leg's departure, applied to both presets. Default 3.
+  int transferBufferMin();
+  void setTransferBufferMin(int minutes);
+
+  // Reduced-clutter board mode: draws only the 1-2 soonest departures at
+  // a larger size instead of the full multi-route board. See
+  // render_engine.h's setFocusMode().
+  bool focusMode();
+  void setFocusMode(bool enabled);
 
  private:
   ConfigBackend& backend_;

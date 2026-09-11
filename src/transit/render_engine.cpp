@@ -148,6 +148,19 @@ std::string formatDepartureChip(const DepartureRow& dep, int64_t nowEpoch) {
   return text;
 }
 
+// ADHD-friendly "leave now" urgency cue: departures 5 minutes or closer get
+// a bold+outline treatment (see the chip-drawing loop below and
+// drawFocusRow()) instead of a new gray fill -- a fill would visually
+// collide with the real-time pill's own dithered LightGray background just
+// above. nowEpoch<=0 (SNTP never synced this wake) means minutes-until
+// can't be computed at all, so nothing is ever flagged urgent in that case
+// -- matches formatDepartureChip()'s own fallback to a plain clock time.
+bool isLeaveNowUrgent(const DepartureRow& dep, int64_t nowEpoch) {
+  if (nowEpoch <= 0) return false;
+  const int64_t minutes = (dep.departureTimeEpoch - nowEpoch) / 60;
+  return minutes <= 5;
+}
+
 // icon_cache.h: IconBitmap is a row-padded-to-byte 1bpp mask where a set bit
 // is the shape (to be tinted) -- the same polarity FreeInkUICore.h documents
 // for BitmapFormat::BW1 ("set-bit-is-ink"), as opposed to Mask1 (the
@@ -326,8 +339,10 @@ void drawDirectionRow(fui::DrawTarget& target, IconCache& iconCache, const fui::
   const int16_t chipRight = line2Rect.right();
   for (const DepartureRow& dep : dir.departures) {
     const std::string chip = formatDepartureChip(dep, nowEpoch);
+    const bool urgent = isLeaveNowUrgent(dep, nowEpoch);
     fui::TextStyle chipStyle;
     chipStyle.maxLines = 1;
+    chipStyle.bold = urgent;
     const fui::Size sz = target.measureText(chipStyle.font, chip.c_str(), chipStyle);
     if (chipX + sz.width > chipRight) break;  // out of room; ui_logic already caps the count
     const fui::Rect chipRect{chipX, line2Rect.y, sz.width, line2Rect.height};
@@ -337,7 +352,101 @@ void drawDirectionRow(fui::DrawTarget& target, IconCache& iconCache, const fui::
       target.fill(chipRect.inset(fui::Insets{-2, -3, -2, -3}), fui::Paint::solid(fui::Color::LightGray), 3);
     }
     target.text(chipRect, chip.c_str(), chipStyle);
+    if (urgent) {
+      // Outline stroke, not a fill -- see isLeaveNowUrgent()'s comment on
+      // why this can't reuse the RT pill's gray fill.
+      target.stroke(chipRect.inset(fui::Insets{-2, -3, -2, -3}), fui::Paint::solid(fui::Color::Black), 1);
+    }
     chipX = static_cast<int16_t>(chipX + sz.width + kChipGap);
+  }
+}
+
+// --- Preset trip summary strip (BoardStatus::presetTrips) ------------------
+
+constexpr int16_t kPresetLineHeight = 30;
+constexpr int16_t kPresetNameColumnWidth = 70;
+
+// Total height to reserve above the footer for the preset-trip strip --
+// zero when there are no configured presets, so the departure-row layout
+// below is pixel-identical to before this feature existed in that case.
+int16_t presetStripHeight(const std::vector<BoardStatus::PresetTripSummaryLine>& lines) {
+  return static_cast<int16_t>(lines.size() * kPresetLineHeight);
+}
+
+void drawPresetTripStrip(fui::DrawTarget& target, int16_t screenW, int16_t stripTop,
+                         const std::vector<BoardStatus::PresetTripSummaryLine>& lines) {
+  for (size_t i = 0; i < lines.size(); ++i) {
+    const fui::Rect lineRect{kMargin, static_cast<int16_t>(stripTop + static_cast<int16_t>(i) * kPresetLineHeight),
+                             static_cast<int16_t>(screenW - 2 * kMargin), kPresetLineHeight};
+
+    fui::TextStyle nameStyle;
+    nameStyle.bold = true;
+    nameStyle.maxLines = 1;
+    const fui::Rect nameRect{lineRect.x, lineRect.y, kPresetNameColumnWidth, lineRect.height};
+    target.text(nameRect, lines[i].presetName.c_str(), nameStyle);
+
+    const int16_t textX = static_cast<int16_t>(lineRect.x + kPresetNameColumnWidth + 8);
+    const int16_t textW = static_cast<int16_t>(lineRect.width - kPresetNameColumnWidth - 8);
+    fui::TextStyle textStyle;
+    textStyle.maxLines = 1;
+    textStyle.bold = lines[i].leaveNow;
+    const fui::Rect textRect{textX, lineRect.y, textW, lineRect.height};
+    target.text(textRect, lines[i].text.c_str(), textStyle);
+    if (lines[i].leaveNow) {
+      target.stroke(textRect.inset(fui::Insets{-2, -4, -2, -4}), fui::Paint::solid(fui::Color::Black), 1);
+    }
+  }
+}
+
+// --- Focus mode: 1-2 much larger rows instead of the full board ------------
+
+constexpr int kFocusMaxBoards = 2;
+constexpr int16_t kFocusRowGap = 16;
+
+// The boards with the soonest upcoming departure, up to maxCount -- ignores
+// the caller's routeOrder/sortByTime ordering entirely (focus mode's point
+// is "just the next relevant thing," see render_engine.h's setFocusMode()
+// comment). ui_logic::buildDepartureBoard() never emits a DirectionBoard
+// with an empty departures list in practice, but this filters them out
+// defensively anyway (rather than trusting that invariant) since dir-
+// ->departures.front() below would otherwise be undefined behavior.
+std::vector<const DirectionBoard*> selectFocusBoards(const std::vector<DirectionBoard>& board,
+                                                     int maxCount) {
+  std::vector<const DirectionBoard*> sorted;
+  sorted.reserve(board.size());
+  for (const auto& b : board) {
+    if (!b.departures.empty()) sorted.push_back(&b);
+  }
+  std::stable_sort(sorted.begin(), sorted.end(), [](const DirectionBoard* a, const DirectionBoard* b) {
+    return a->departures.front().departureTimeEpoch < b->departures.front().departureTimeEpoch;
+  });
+  if (static_cast<int>(sorted.size()) > maxCount) sorted.resize(static_cast<size_t>(maxCount));
+  return sorted;
+}
+
+void drawFocusRow(fui::DrawTarget& target, const fui::Rect& rowRect, const DirectionBoard& dir,
+                  int64_t nowEpoch) {
+  const DepartureRow& nextDep = dir.departures.front();
+
+  const int16_t labelHeight = static_cast<int16_t>(rowRect.height * 4 / 10);
+  fui::TextStyle labelStyle;
+  labelStyle.align = fui::TextAlign::Center;
+  labelStyle.bold = true;
+  labelStyle.maxLines = 2;
+  const std::string label = dir.routeShortName + "  " + nextDep.headsign;
+  const fui::Rect labelRect{rowRect.x, rowRect.y, rowRect.width, labelHeight};
+  target.text(labelRect, label.c_str(), labelStyle);
+
+  const fui::Rect chipRect{rowRect.x, static_cast<int16_t>(rowRect.y + labelHeight), rowRect.width,
+                           static_cast<int16_t>(rowRect.height - labelHeight)};
+  const std::string chip = formatDepartureChip(nextDep, nowEpoch);
+  fui::TextStyle chipStyle;
+  chipStyle.align = fui::TextAlign::Center;
+  chipStyle.bold = true;
+  chipStyle.maxLines = 1;
+  target.text(chipRect, chip.c_str(), chipStyle);
+  if (isLeaveNowUrgent(nextDep, nowEpoch)) {
+    target.stroke(chipRect.inset(fui::Insets{4, 24, 4, 24}), fui::Paint::solid(fui::Color::Black), 2);
   }
 }
 
@@ -396,16 +505,23 @@ void RenderEngine::setScreenSize(int16_t screenWidth, int16_t screenHeight) {
   screenHeight_ = screenHeight;
 }
 
+void RenderEngine::setFocusMode(bool enabled) { focusMode_ = enabled; }
+
 void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board, const BoardStatus& status) {
   target_.fill(fui::Rect{0, 0, screenWidth_, screenHeight_}, fui::Paint::solid(fui::Color::White));
 
   drawStatusHeader(target_, screenWidth_, status);
 
   const int16_t footerHeight = attributionFooterHeight();
+  const int16_t presetStripH = presetStripHeight(status.presetTrips);
   const int16_t bodyTop = static_cast<int16_t>(kHeaderHeight + 8);
-  // Reserve the footer strip (plus its own kMargin gap above it) below the
-  // last row so the attribution label is never crowded or covered.
-  const int16_t bodyBottom = static_cast<int16_t>(screenHeight_ - kMargin - footerHeight);
+  // Reserve the footer strip (plus its own kMargin gap above it) and, when
+  // any presets are configured, the preset-trip strip above that, below the
+  // last row so neither is ever crowded or covered. presetStripH is 0 when
+  // status.presetTrips is empty, making this identical to the pre-preset-
+  // trip layout in that case.
+  const int16_t bodyBottom =
+      static_cast<int16_t>(screenHeight_ - kMargin - footerHeight - presetStripH);
   const int16_t bodyHeight = static_cast<int16_t>(bodyBottom - bodyTop);
   const int maxRows = std::max(0, (bodyHeight + kRowGap) / (kMinRowHeight + kRowGap));
 
@@ -415,6 +531,17 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
     empty.maxLines = 2;
     const fui::Rect emptyRect{kMargin, bodyTop, static_cast<int16_t>(screenWidth_ - 2 * kMargin), bodyHeight};
     target_.text(emptyRect, "No departures to show.", empty);
+  } else if (focusMode_) {
+    const std::vector<const DirectionBoard*> focusBoards = selectFocusBoards(board, kFocusMaxBoards);
+    const int rowsToDraw = static_cast<int>(focusBoards.size());
+    const int16_t rowHeight = rowsToDraw > 0
+        ? static_cast<int16_t>((bodyHeight - (rowsToDraw - 1) * kFocusRowGap) / rowsToDraw)
+        : bodyHeight;
+    for (int i = 0; i < rowsToDraw; ++i) {
+      const fui::Rect rowRect{kMargin, static_cast<int16_t>(bodyTop + i * (rowHeight + kFocusRowGap)),
+                              static_cast<int16_t>(screenWidth_ - 2 * kMargin), rowHeight};
+      drawFocusRow(target_, rowRect, *focusBoards[static_cast<size_t>(i)], status.lastUpdatedEpoch);
+    }
   } else {
     const int rowsToDraw = std::min<int>(maxRows, static_cast<int>(board.size()));
 
@@ -456,6 +583,10 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
                               static_cast<int16_t>(screenWidth_ - 2 * kMargin), rowHeight};
       drawDirectionRow(target_, iconCache_, rowRect, board[i], status.lastUpdatedEpoch, collision);
     }
+  }
+
+  if (!status.presetTrips.empty()) {
+    drawPresetTripStrip(target_, screenWidth_, bodyBottom, status.presetTrips);
   }
 
   drawAttributionFooter(target_, screenWidth_, screenHeight_, footerHeight);

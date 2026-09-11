@@ -245,6 +245,96 @@ void test_hidden_routes_and_route_order_are_independent_keys() {
   TEST_ASSERT_EQUAL_STRING("1:94380", order[1].c_str());
 }
 
+void test_preset_legs_empty_by_default() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_TRUE(store.presetLegs(transit::ConfigStore::PresetId::kHome).empty());
+  TEST_ASSERT_TRUE(store.presetLegs(transit::ConfigStore::PresetId::kWork).empty());
+}
+
+void test_preset_legs_round_trip_single_leg() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  transit::TripLegConfig leg;
+  leg.routeId = "1:31";
+  leg.boardStopId = "1:100";
+  leg.alightStopId = "1:200";
+  leg.directionId = 0;
+  store.setPresetLegs(transit::ConfigStore::PresetId::kHome, {leg});
+
+  auto legs = store.presetLegs(transit::ConfigStore::PresetId::kHome);
+  TEST_ASSERT_EQUAL_INT(1, legs.size());
+  TEST_ASSERT_EQUAL_STRING("1:31", legs[0].routeId.c_str());
+  TEST_ASSERT_EQUAL_STRING("1:100", legs[0].boardStopId.c_str());
+  TEST_ASSERT_EQUAL_STRING("1:200", legs[0].alightStopId.c_str());
+  TEST_ASSERT_EQUAL_INT(0, legs[0].directionId);
+}
+
+void test_preset_legs_round_trip_multiple_legs_unset_direction() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  transit::TripLegConfig leg1;
+  leg1.routeId = "1:31";
+  leg1.boardStopId = "1:100";
+  leg1.alightStopId = "1:200";
+  leg1.directionId = 0;
+
+  transit::TripLegConfig leg2;
+  leg2.routeId = "1:32";
+  leg2.boardStopId = "1:200";
+  leg2.alightStopId = "1:300";
+  leg2.directionId = -1;  // unset
+
+  store.setPresetLegs(transit::ConfigStore::PresetId::kWork, {leg1, leg2});
+
+  auto legs = store.presetLegs(transit::ConfigStore::PresetId::kWork);
+  TEST_ASSERT_EQUAL_INT(2, legs.size());
+  TEST_ASSERT_EQUAL_STRING("1:32", legs[1].routeId.c_str());
+  TEST_ASSERT_EQUAL_INT(-1, legs[1].directionId);
+}
+
+void test_home_and_work_legs_are_independent_keys() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  transit::TripLegConfig homeLeg;
+  homeLeg.routeId = "1:31";
+  homeLeg.boardStopId = "1:100";
+  homeLeg.alightStopId = "1:200";
+  store.setPresetLegs(transit::ConfigStore::PresetId::kHome, {homeLeg});
+
+  TEST_ASSERT_EQUAL_INT(1, store.presetLegs(transit::ConfigStore::PresetId::kHome).size());
+  TEST_ASSERT_TRUE(store.presetLegs(transit::ConfigStore::PresetId::kWork).empty());
+}
+
+void test_preset_walk_to_first_stop_min_default_and_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_EQUAL_INT(0, store.presetWalkToFirstStopMin(transit::ConfigStore::PresetId::kHome));
+  store.setPresetWalkToFirstStopMin(transit::ConfigStore::PresetId::kHome, 5);
+  store.setPresetWalkToFirstStopMin(transit::ConfigStore::PresetId::kWork, 8);
+  TEST_ASSERT_EQUAL_INT(5, store.presetWalkToFirstStopMin(transit::ConfigStore::PresetId::kHome));
+  TEST_ASSERT_EQUAL_INT(8, store.presetWalkToFirstStopMin(transit::ConfigStore::PresetId::kWork));
+}
+
+void test_transfer_buffer_min_default_and_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_EQUAL_INT(3, store.transferBufferMin());
+  store.setTransferBufferMin(5);
+  TEST_ASSERT_EQUAL_INT(5, store.transferBufferMin());
+}
+
+void test_focus_mode_default_and_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_FALSE(store.focusMode());
+  store.setFocusMode(true);
+  TEST_ASSERT_TRUE(store.focusMode());
+}
+
 int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_unprovisioned_until_wifi_key_and_stop_are_set);
@@ -269,5 +359,12 @@ int main(int argc, char** argv) {
   RUN_TEST(test_route_order_single_entry_round_trip);
   RUN_TEST(test_route_order_multiple_entries_round_trip);
   RUN_TEST(test_hidden_routes_and_route_order_are_independent_keys);
+  RUN_TEST(test_preset_legs_empty_by_default);
+  RUN_TEST(test_preset_legs_round_trip_single_leg);
+  RUN_TEST(test_preset_legs_round_trip_multiple_legs_unset_direction);
+  RUN_TEST(test_home_and_work_legs_are_independent_keys);
+  RUN_TEST(test_preset_walk_to_first_stop_min_default_and_round_trip);
+  RUN_TEST(test_transfer_buffer_min_default_and_round_trip);
+  RUN_TEST(test_focus_mode_default_and_round_trip);
   return UNITY_END();
 }

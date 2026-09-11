@@ -64,9 +64,10 @@ class SetupFlow {
   bool runFirstTimeSetup();
 
   // Same AP + captive-portal machinery as runFirstTimeSetup(), but serves a
-  // minimal settings-only page (display orientation,
-  // docs/CONFIG_AND_STATE.md's display_portrait; and the optional STA stop
-  // code, sta_stop) instead of the Wi-Fi/API key/stop wizard — so an
+  // settings-only page (display orientation, docs/CONFIG_AND_STATE.md's
+  // display_portrait; the optional STA stop code, sta_stop; and optional
+  // "Home"/"Work" preset trip chains, trip_planner.h/config_store.h's
+  // presetLegs() et al.) instead of the Wi-Fi/API key/stop wizard — so an
   // already-provisioned board can have a setting changed without redoing
   // first-run setup from scratch. main.cpp is responsible for deciding when
   // to call this (a deliberate long-hold of the power button at boot, not a
@@ -124,6 +125,30 @@ class SetupFlow {
   void handleSetOrientation();
   void handleGetStaStop();
   void handleSetStaStop();
+
+  // Preset "Home"/"Work" trip-planning settings (trip_planner.h,
+  // ConfigStore::presetLegs() et al.) -- settings-only, requireSettingsMode()
+  // -guarded. handleLegDirections() resolves a route short name typed at a
+  // given boarding stop into a real globalRouteId plus that route's
+  // available directions/headsigns (stop_departures alone can't tell a
+  // caller which direction continues toward a given transfer stop -- see
+  // trip_planner.h's TripLegConfig::directionId comment), so the settings
+  // page can offer a live direction picker rather than guessing.
+  // handleGetPresets()/handleSetPresets() read/write the full leg
+  // configuration for both presets in one JSON request each (POST body read
+  // via server_.arg("plain") -- see setup_flow.cpp for why a JSON body
+  // instead of form fields, unlike this file's other handlers).
+  void handleLegDirections();
+  void handleGetPresets();
+  void handleSetPresets();
+
+  // Explicit "the user reached the end of the settings flow" signal (POST
+  // /settingsdone, called by the settings page's JS once it shows
+  // step-done) -- see settingsFinished_'s comment on why this exists
+  // instead of runSettingsPortal() closing the portal right after the
+  // first individual setting is saved.
+  void handleSettingsDone();
+
   void handleCaptiveRedirect();
   void handleNotFound();
 
@@ -143,11 +168,23 @@ class SetupFlow {
 
   uint32_t lastActivityMs_ = 0;
 
-  // Set by handleSetOrientation(), read by runSettingsPortal()'s loop to
-  // know when to show a confirmation and exit — mirrors how
-  // runFirstTimeSetup() watches configStore_.isProvisioned() for the same
-  // "something was just saved, wrap up" purpose.
+  // Set by every individual settings handler (orientation/STA/presets) the
+  // moment it saves something -- read only for runSettingsPortal()'s return
+  // value ("was anything actually changed this session").
   bool settingsSaved_ = false;
+
+  // Set only by handleSettingsDone(), once the settings page's JS reaches
+  // its final step-done section -- this, not settingsSaved_, is what
+  // actually tells runSettingsPortal()'s loop to show a confirmation and
+  // exit. Kept distinct from settingsSaved_ because the settings page is
+  // now a multi-step flow (orientation -> STA -> presets -> done): closing
+  // the portal 5 seconds after the *first* setting was saved (the original,
+  // single-setting-era behavior) would tear down the AP/web server out from
+  // under a user who's still filling in a later step. Each step still
+  // writes to configStore_ immediately on its own save, same resume-safe
+  // philosophy as the rest of this file -- this flag only affects when the
+  // portal itself shuts down, never data safety.
+  bool settingsFinished_ = false;
 
   // Cached between POST /stopsearch and POST /stopselect (the page refers
   // back to a search result by index rather than resending the full stop).
