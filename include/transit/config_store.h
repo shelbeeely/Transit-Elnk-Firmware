@@ -119,6 +119,17 @@ class ConfigStore {
   bool displayPortrait();
   void setDisplayPortrait(bool portrait);
 
+  // STA (Spokane Transit Authority) is a second, optional data source
+  // alongside the Transit API — the numeric stop code printed on the
+  // physical STA stop sign (sta_stop_table.h resolves this to the
+  // GTFS-RT feed's internal stop_id and a display name; see
+  // sta_client.h). Empty = STA not configured, only Transit API
+  // departures show. Changeable via SetupFlow::runSettingsPortal(), same
+  // as displayPortrait() above — not part of first-run setup, since it's
+  // an optional add-on rather than something the board needs to function.
+  std::string staStopCode();
+  void setStaStopCode(const std::string& stopCode);
+
  private:
   ConfigBackend& backend_;
 };

@@ -26,6 +26,7 @@
 #include "transit/power_scheduler.h"
 #include "transit/render_engine.h"
 #include "transit/setup_flow.h"
+#include "transit/sta_client.h"
 #include "transit/ui_logic.h"
 
 using namespace transit;
@@ -192,6 +193,21 @@ void setup() {
     status.lastFetchFailed = !fetchOk;
     if (fetchOk) {
       routes = response.routeDepartures;
+    }
+
+    // STA is a second, optional data source (docs/CONFIG_AND_STATE.md's
+    // sta_stop) shown alongside Transit's own departures, not merged into
+    // them -- see sta_models.h's staDeparturesToRoutes(). Independent of
+    // the Transit fetch above: attempted whenever Wi-Fi is up regardless of
+    // whether that fetch succeeded, and a failure here (network, a stop
+    // code sta_stop_table.h doesn't recognize, or too little free heap for
+    // the ~190KB feed -- see sta_client.h) never affects status/routes
+    // above, since the board still has Transit's departures either way.
+    std::string staStopCode = g_configStore.staStopCode();
+    if (!staStopCode.empty()) {
+      sta::StaClient staClient(g_httpTransport);
+      std::vector<Route> staRoutes = staClient.fetchDepartures(staStopCode);
+      routes.insert(routes.end(), staRoutes.begin(), staRoutes.end());
     }
   } else {
     status.lastFetchFailed = true;

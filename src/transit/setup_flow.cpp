@@ -29,6 +29,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include "transit/sta_models.h"
+
 #include <algorithm>
 #include <climits>
 #include <cstdlib>
@@ -280,9 +282,18 @@ button{margin-top:1em;padding:.6em 1.2em;font-size:1em}
 <div id="orientation-msg" class="msg"></div>
 </section>
 
+<section id="step-sta">
+<p>Optional &mdash; also show Spokane Transit Authority (STA) departures alongside Transit's.</p>
+<label>STA stop number</label>
+<input id="sta-stop" placeholder="e.g. 4377 &mdash; printed on the stop sign">
+<button onclick="saveStaStop()">Save</button>
+<button onclick="showStep('step-done')">Skip</button>
+<div id="sta-msg" class="msg"></div>
+</section>
+
 <section id="step-done">
 <h2>Settings saved</h2>
-<p>Your board will redraw with the new orientation. You can close this page.</p>
+<p>Your board will redraw with the new settings. You can close this page.</p>
 </section>
 
 <script>
@@ -304,9 +315,24 @@ function saveOrientation(){
   setMsg('orientation-msg','Saving...','');
   fetch('/setorientation',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'portrait='+(portrait?'1':'0')})
     .then(function(r){return r.json();}).then(function(res){
-      if(res.ok){ showStep('step-done'); }
+      if(res.ok){
+        fetch('/getstastop').then(function(r){return r.json();}).then(function(s){
+          el('sta-stop').value = s.stopCode || '';
+        }).catch(function(){});
+        showStep('step-sta');
+      }
       else { setMsg('orientation-msg',res.message||'Could not save.','err'); }
     }).catch(function(){ setMsg('orientation-msg','Could not reach the board. Try again.','err'); });
+}
+
+function saveStaStop(){
+  var code = el('sta-stop').value.trim();
+  setMsg('sta-msg','Saving...','');
+  fetch('/setstastop',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'code='+encodeURIComponent(code)})
+    .then(function(r){return r.json();}).then(function(res){
+      if(res.ok){ showStep('step-done'); }
+      else { setMsg('sta-msg',res.message||'Could not save.','err'); }
+    }).catch(function(){ setMsg('sta-msg','Could not reach the board. Try again.','err'); });
 }
 </script>
 </body></html>
@@ -337,6 +363,8 @@ void SetupFlow::startPortal() {
   server_.on("/stopselect", HTTP_POST, [this]() { handleStopSelect(); });
   server_.on("/getorientation", HTTP_GET, [this]() { handleGetOrientation(); });
   server_.on("/setorientation", HTTP_POST, [this]() { handleSetOrientation(); });
+  server_.on("/getstastop", HTTP_GET, [this]() { handleGetStaStop(); });
+  server_.on("/setstastop", HTTP_POST, [this]() { handleSetStaStop(); });
 
   // Common captive-portal probe URLs (Android/Chrome, iOS/macOS, Windows) —
   // redirecting these to "/" is what makes phones auto-open the portal
@@ -393,6 +421,7 @@ void SetupFlow::handleRoot() {
 
 void SetupFlow::handleGetOrientation() {
   touchActivity();
+  if (!requireSettingsMode()) return;
   JsonDocument doc;
   doc["portrait"] = configStore_.displayPortrait();
   std::string body;
@@ -402,9 +431,45 @@ void SetupFlow::handleGetOrientation() {
 
 void SetupFlow::handleSetOrientation() {
   touchActivity();
+  if (!requireSettingsMode()) return;
   std::string portraitArg = server_.hasArg("portrait") ? server_.arg("portrait").c_str() : "";
   bool portrait = portraitArg == "1" || portraitArg == "true";
   configStore_.setDisplayPortrait(portrait);
+  settingsSaved_ = true;
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void SetupFlow::handleGetStaStop() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+  JsonDocument doc;
+  doc["stopCode"] = configStore_.staStopCode();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleSetStaStop() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+  std::string code = server_.hasArg("code") ? server_.arg("code").c_str() : "";
+
+  // Validated synchronously against the baked-in sta_stop_table.h (a plain
+  // table lookup, not a network call like handleApiKey()'s validation) via
+  // the same sta::parseStaStopCode() helper StaClient::fetchDepartures()
+  // resolves a saved code with, so a typo surfaces here immediately rather
+  // than silently saving a code that will just never match anything at
+  // fetch time -- and the two can't drift out of sync with each other.
+  // Empty is always accepted -- it means "STA not configured," same as an
+  // empty api_key/stop_id means "not provisioned" elsewhere in this flow.
+  if (!code.empty() && sta::parseStaStopCode(code) == nullptr) {
+    server_.send(200, "application/json",
+                 "{\"ok\":false,\"message\":\"Stop number not found. Check the number on the "
+                 "sign.\"}");
+    return;
+  }
+
+  configStore_.setStaStopCode(code);
   settingsSaved_ = true;
   server_.send(200, "application/json", "{\"ok\":true}");
 }
@@ -419,6 +484,21 @@ void SetupFlow::handleSetOrientation() {
 // Wi-Fi credentials, the API key, or the stop pick.
 bool SetupFlow::requireFirstRunMode() {
   if (portalMode_ == PortalMode::kFirstRun) return true;
+  server_.send(403, "application/json", "{\"ok\":false,\"message\":\"Not available.\"}");
+  return false;
+}
+
+// The mirror image of requireFirstRunMode(), for the settings-only
+// handlers above: startPortal() also keeps /getorientation, /setorientation,
+// /getstastop, and /setstastop registered while the open first-run AP is up
+// (before the board is even provisioned), even though the first-run
+// wizard's own page never presents those steps and never links to them.
+// Lower stakes than the first-run-endpoints-during-settings case above
+// (anyone on that AP already has full first-run wizard access anyway), but
+// there's no reason to leave settings writable from a step of the flow
+// that hasn't asked for them.
+bool SetupFlow::requireSettingsMode() {
+  if (portalMode_ == PortalMode::kSettings) return true;
   server_.send(403, "application/json", "{\"ok\":false,\"message\":\"Not available.\"}");
   return false;
 }

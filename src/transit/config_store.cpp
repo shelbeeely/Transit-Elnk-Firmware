@@ -129,4 +129,7 @@ void ConfigStore::setLocale(const std::string& locale) { backend_.setString("loc
 bool ConfigStore::displayPortrait() { return backend_.getBool("portrait", false); }
 void ConfigStore::setDisplayPortrait(bool portrait) { backend_.setBool("portrait", portrait); }
 
+std::string ConfigStore::staStopCode() { return backend_.getString("sta_stop", ""); }
+void ConfigStore::setStaStopCode(const std::string& stopCode) { backend_.setString("sta_stop", stopCode); }
+
 }  // namespace transit

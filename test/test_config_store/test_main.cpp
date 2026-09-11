@@ -129,6 +129,16 @@ void test_display_portrait_defaults_to_landscape_and_round_trips() {
   TEST_ASSERT_FALSE(store.displayPortrait());
 }
 
+void test_sta_stop_code_empty_by_default_and_round_trips() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_EQUAL_STRING("", store.staStopCode().c_str());
+  store.setStaStopCode("4377");
+  TEST_ASSERT_EQUAL_STRING("4377", store.staStopCode().c_str());
+  store.setStaStopCode("");
+  TEST_ASSERT_EQUAL_STRING("", store.staStopCode().c_str());
+}
+
 void test_sleep_window_start_and_end_default_and_round_trip() {
   InMemoryConfigBackend backend;
   transit::ConfigStore store(backend);
@@ -247,6 +257,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_time_format_default_and_round_trip);
   RUN_TEST(test_locale_default_and_round_trip);
   RUN_TEST(test_display_portrait_defaults_to_landscape_and_round_trips);
+  RUN_TEST(test_sta_stop_code_empty_by_default_and_round_trips);
   RUN_TEST(test_sleep_window_start_and_end_default_and_round_trip);
   RUN_TEST(test_wifi_ssid_and_password_round_trip);
   RUN_TEST(test_api_key_and_stop_id_round_trip);

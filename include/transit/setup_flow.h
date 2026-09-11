@@ -64,15 +64,16 @@ class SetupFlow {
   bool runFirstTimeSetup();
 
   // Same AP + captive-portal machinery as runFirstTimeSetup(), but serves a
-  // minimal settings-only page (currently just display orientation,
-  // docs/CONFIG_AND_STATE.md's display_portrait) instead of the Wi-Fi/API
-  // key/stop wizard — so an already-provisioned board can have a setting
-  // changed without redoing first-run setup from scratch. main.cpp is
-  // responsible for deciding when to call this (a deliberate long-hold of
-  // the power button at boot, not a normal wake) and for re-orienting its
-  // DrawTarget/RenderEngine afterward if this returns true (see
-  // RenderEngine::setScreenSize()). Returns true if a setting was actually
-  // changed and saved, false if the portal timed out/was left untouched.
+  // minimal settings-only page (display orientation,
+  // docs/CONFIG_AND_STATE.md's display_portrait; and the optional STA stop
+  // code, sta_stop) instead of the Wi-Fi/API key/stop wizard — so an
+  // already-provisioned board can have a setting changed without redoing
+  // first-run setup from scratch. main.cpp is responsible for deciding when
+  // to call this (a deliberate long-hold of the power button at boot, not a
+  // normal wake) and for re-orienting its DrawTarget/RenderEngine
+  // afterward if this returns true (see RenderEngine::setScreenSize()).
+  // Returns true if a setting was actually changed and saved, false if the
+  // portal timed out/was left untouched.
   bool runSettingsPortal();
 
  private:
@@ -102,6 +103,14 @@ class SetupFlow {
   // kFirstRun; callers return immediately in that case.
   bool requireFirstRunMode();
 
+  // Mirror image of requireFirstRunMode(), for the settings-only handlers
+  // (handleGetOrientation/handleSetOrientation/handleGetStaStop/
+  // handleSetStaStop): refuses to act unless portalMode_ is kSettings, so
+  // they aren't reachable from the open first-run AP before the board is
+  // even provisioned, even though startPortal() keeps their routes
+  // registered regardless of mode.
+  bool requireSettingsMode();
+
   // WebServer route handlers (see setup_flow.cpp for the served page/JSON
   // shapes). All hang off `this` via lambdas registered in startPortal().
   void handleRoot();
@@ -113,6 +122,8 @@ class SetupFlow {
   void handleStopSelect();
   void handleGetOrientation();
   void handleSetOrientation();
+  void handleGetStaStop();
+  void handleSetStaStop();
   void handleCaptiveRedirect();
   void handleNotFound();
 
