@@ -77,14 +77,14 @@ int computeNextWakeIntervalMin(int refreshIntervalMin, const SleepWindow& window
   freeink::PowerManager::deepSleep();
 }
 
-// Reads battery level via freeink::BatteryMonitor (X4: ADC backend, per
+// Reads battery level via BatteryMonitor (X4: ADC backend, per
 // BoardConfig::ACTIVE — see BatteryMonitor.h). Returns 0 rather than a
 // stale/optimistic value when the board has no battery telemetry path or
 // the read didn't produce a known percentage, so a caller never mistakes
 // "unknown" for "full".
 int readBatteryPercent() {
-  freeink::BatteryMonitor batteryMonitor;
-  freeink::BatteryMonitor::Status status = batteryMonitor.readStatus();
+  BatteryMonitor batteryMonitor;
+  BatteryMonitor::Status status = batteryMonitor.readStatus();
   if (!status.supported || !status.percentageKnown) return 0;
   return static_cast<int>(status.percentage);
 }

@@ -45,7 +45,14 @@ HttpResponse WifiHttpTransport::get(
     const int contentLength = http.getSize();  // -1 if unknown (chunked)
     if (contentLength > 0) response.body.reserve(static_cast<size_t>(contentLength));
 
-    WiFiClient* stream = http.getStreamPtr();
+    // auto*, not WiFiClient*: this project's pinned Arduino-ESP32 core
+    // (3.3.7, see platformio.ini) resolves the networking stack through its
+    // newer unified Network/NetworkClientSecure types rather than the
+    // classic WiFiClient/WiFiClientSecure names, and getStreamPtr()'s exact
+    // return type follows that -- available()/readBytes() below are both
+    // part of the standard Arduino Stream/Client interface either way, so
+    // there's no reason to hardcode a concrete class name here.
+    auto* stream = http.getStreamPtr();
     uint8_t buffer[512];
     // Absolute cap on top of whatever Content-Length claims: this is
     // untrusted network input, and a malformed/malicious/misbehaving server
