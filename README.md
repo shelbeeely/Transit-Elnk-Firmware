@@ -32,6 +32,20 @@ walkthrough (free vs. paid tier, rate limits, where the key is stored —
 **never compiled into tracked source**; it's entered on-device and stored
 in NVS).
 
+## Settings (after first-run)
+
+A long power-button hold at boot on an already-provisioned board opens a
+second, smaller version of the same captive-portal page — a settings
+portal for things that aren't part of first-run setup:
+
+- **Display orientation** — landscape (the panel's native orientation) or
+  portrait.
+- **STA departures** — optionally show Spokane Transit Authority arrivals
+  alongside Transit's, by entering the numeric stop code printed on a
+  physical STA stop sign. See
+  [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) for how that data
+  source works and its compliance notes.
+
 ## Building
 
 ```sh
@@ -50,8 +64,9 @@ few minutes. CI (`.github/workflows/ci.yml`) runs both on every push/PR.
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Boot → setup-if-unprovisioned → Wi-Fi + fetch → render → deep sleep |
-| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), first-run captive-portal setup (`setup_flow`) |
+| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`) |
 | `test/` | Host-side Unity tests for the hardware-independent modules (`pio test -e native`) |
+| `tools/gen_sta_tables.py` | Regenerates the baked-in STA route/stop tables from a fresh GTFS feed |
 | `freeink-sdk/` | Vendored SDK submodule — display driver, UI framework, board config, power management, etc. |
 | `docs/` | Design spec this firmware is built against (see table below) |
 
@@ -70,3 +85,4 @@ implementation time.
 | [`docs/CONFIG_AND_STATE.md`](docs/CONFIG_AND_STATE.md) | Every user-configurable value today, and the NVS `ConfigStore` key mapping |
 | [`docs/ASSETS_ICONS.md`](docs/ASSETS_ICONS.md) | Route icon/color source and the SVG→4-gray-bitmap conversion path |
 | [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) | API key tier limits and what "continuous" polling actually costs |
+| [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) | Spokane Transit Authority: the second, optional data source — how it's fetched, the baked-in route/stop tables, and its compliance notes |

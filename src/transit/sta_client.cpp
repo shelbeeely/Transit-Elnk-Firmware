@@ -41,19 +41,49 @@ constexpr size_t kMinFreeHeapBytes = 260 * 1024;
 StaClient::StaClient(HttpTransport& transport) : transport_(transport) {}
 
 std::vector<Route> StaClient::fetchDepartures(const std::string& stopCode) {
+  // Every failure path here returns {} the same way -- to main.cpp, "STA had
+  // nothing to report" and "STA is misconfigured" and "the network hiccuped"
+  // are all the same non-fatal outcome (see sta_client.h). But that means
+  // there's otherwise no way to tell those apart from outside a debugger, so
+  // each one logs a one-line reason over Serial -- the same "if (Serial)"
+  // guard freeink-sdk's own SecureClient.cpp uses, since a battery device
+  // isn't guaranteed to have a monitor attached at the time.
   const StopInfo* stopInfo = parseStaStopCode(stopCode);
-  if (stopInfo == nullptr) return {};
+  if (stopInfo == nullptr) {
+    if (Serial) Serial.printf("[StaClient] stop code \"%s\" not recognized, skipping STA fetch\n",
+                              stopCode.c_str());
+    return {};
+  }
 
-  if (ESP.getFreeHeap() < kMinFreeHeapBytes) return {};
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < kMinFreeHeapBytes) {
+    if (Serial)
+      Serial.printf("[StaClient] skipping STA fetch: %u bytes free heap, need >= %u\n",
+                    static_cast<unsigned>(freeHeap), static_cast<unsigned>(kMinFreeHeapBytes));
+    return {};
+  }
 
   HttpResponse response = transport_.get(kStaFeedUrl, {{kStaApiKeyHeader, kStaApiKeyValue}});
-  if (!response.transportOk || response.statusCode != 200) return {};
+  if (!response.transportOk || response.statusCode != 200) {
+    if (Serial)
+      Serial.printf("[StaClient] STA feed fetch failed: transportOk=%d statusCode=%d\n",
+                    response.transportOk, response.statusCode);
+    return {};
+  }
 
   std::vector<StaDeparture> departures;
   const bool ok = parseTripUpdates(reinterpret_cast<const uint8_t*>(response.body.data()),
                                    response.body.size(), stopInfo->stopId, departures);
-  if (!ok) return {};
+  if (!ok) {
+    if (Serial)
+      Serial.printf("[StaClient] STA feed did not parse (%u bytes received)\n",
+                    static_cast<unsigned>(response.body.size()));
+    return {};
+  }
 
+  if (Serial)
+    Serial.printf("[StaClient] stop %s (\"%s\"): %u departures\n", stopInfo->stopId,
+                  stopInfo->stopName, static_cast<unsigned>(departures.size()));
   return staDeparturesToRoutes(departures, stopInfo->stopName);
 }
 
