@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # claude/** as well as main: development happens on those branches, and
+    # the xteink_x4 cross-compile is the one check that cannot be run
+    # anywhere else -- a sandbox has no ESP32 toolchain, so a push that only
+    # landed on a feature branch used to go completely unverified until it
+    # reached main. Catching a build break here costs one CI run; catching
+    # it after a merge costs a broken main.
+    branches: [main, 'claude/**']
   pull_request:
 
 jobs:
