@@ -22,7 +22,7 @@ Header: X-API-KEY: 12345
 
 `12345` is the same shared key published in STA's own public OBA
 configuration, not a private credential issued to this project — see
-**Compliance note** below before any public deployment.
+**Compliance** section below before any public deployment.
 
 This is the entire network's TripUpdates in one response (~190KB observed;
 GTFS-RT has no server-side per-stop filtering) — `sta_client.h` fetches and
@@ -101,24 +101,48 @@ later. Leaving it blank (or clearing a previously-set one) turns STA off.
   falls back to its raw numeric id (`sta_feed_parser.h`'s table-miss path),
   and a moved/renamed stop needs the script re-run to pick up.
 
-## Compliance note — unverified, flag before any public release
+## Compliance — STA's Developer Terms of Use, reviewed
 
-Transit's own API terms (`docs/DEPLOYMENT_OPS.md`) are explicit and were
-reviewed directly; STA's equivalent terms for its GTFS-RT feed were not
-found/reviewed as part of this integration — `spokanetransit.com`'s
-Cloudflare protection blocked every attempt to reach its site, including
-whatever developer/open-data policy page it may have. Two things worth the
-maintainer's attention before this goes in front of anyone but the
-maintainer:
+`spokanetransit.com`'s Cloudflare protection blocked every earlier attempt
+to reach STA's site directly (see above), but the maintainer supplied STA's
+actual **Developers Terms of Use** page content directly, so — unlike the
+initial version of this doc — the terms below are reviewed, not assumed.
+Full text: [spokanetransit.com/developers-terms-of-use](https://www.spokanetransit.com/developers-terms-of-use/).
 
-- The `X-API-KEY: 12345` value is STA's own published default, not a key
-  issued to this project — reasonable for a single personal device, but
-  worth confirming with STA directly (their site, once reachable through
-  whatever channel, or a direct inquiry) before a wider/public deployment
-  rather than assuming it's fine at any scale.
-- No STA logo or trademark asset is used anywhere in this integration —
-  departures are labeled with the plain text "STA `<route number>`" only,
-  deliberately, so nothing here implies STA's endorsement or uses a mark
-  that wasn't confirmed available for use (see the project's earlier
-  Transit-API compliance pass for the same reasoning applied to Transit's
-  actual badge, where the real asset *was* confirmed and used).
+- **License to Data (§1)**: STA grants "a limited, revocable license to
+  use, reproduce, redistribute and display the Data" — this integration's
+  use (fetch the live feed, display arrival predictions on the panel) is
+  squarely "display the Data" and fits within that grant as written.
+- **No trademark/logo use permitted**: "You are not authorized to make any
+  use of any proprietary service marks or trademarks of STA, including
+  without limitation 'Spokane Transit Authority,' the associated logo, or
+  any confusingly similar variant thereof." This integration doesn't use
+  STA's logo or wordmark anywhere — departures are labeled with the plain
+  text "STA `<route number>`" only, an identifying abbreviation, not a
+  reproduction of their mark or logo. Unlike Transit's ToS
+  (`docs/DEPLOYMENT_OPS.md`), STA's terms don't require any on-device
+  attribution badge at all — the plain-text label is a deliberate choice
+  here, not something the terms mandate.
+- **"As is," no warranty, no guaranteed availability (§§1-2)**: STA
+  disclaims all warranties on the Data and may modify/discontinue the
+  service at any time without notice. Informational — matches how
+  `sta_client.cpp` already treats every STA failure mode (network, parse,
+  heap guard) as "nothing to report this cycle," never a hard error.
+- **Termination at STA's discretion (§3)**: STA may terminate access "for
+  any reason," without prior notice. Same practical handling as above.
+- **Content restrictions (§4)**: schedules/arrival/fare data plus
+  trademarks are STA's property; use beyond what §1 licenses
+  ("modification, distribution, republication, or performance") needs
+  STA's written consent. Displaying live arrivals on a personal device is
+  within §1's grant; redistributing the feed itself to third parties
+  would not be, and this project doesn't do that.
+- **A formal Developer's Resource page exists**, gated behind clicking "I
+  Agree to the STA Developers Terms of Use" on that page. This document's
+  shared `X-API-KEY: 12345` was found via STA's public OneBusAway config,
+  not through that gated flow — it works today, but it's worth the
+  maintainer actually clicking through STA's own Developer's Resource page
+  before any wider deployment, in case STA's officially sanctioned path
+  involves requesting a project-specific key rather than relying on the
+  published default indefinitely.
+- **Governing law (§5)**: Washington State, Spokane County courts.
+  Informational, no firmware action.
