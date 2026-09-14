@@ -26,13 +26,21 @@ STA's own site (spokanetransit.com) sits behind Cloudflare bot protection
 that blocks a plain HTTP client (including this device's firmware), so this
 reads from the Mobility Database's public unauthenticated mirror instead:
 https://storage.googleapis.com/storage/v1/b/mdb-latest/o?prefix=us-washington-spokane-transit-authority
-Look up the current .zip object there (the generation/filename changes each
-time Mobility Database re-crawls STA) and pass its download URL or a local
-path to this script.
 
 Usage:
+    python3 tools/gen_sta_tables.py latest
     python3 tools/gen_sta_tables.py path/to/sta_gtfs.zip
     python3 tools/gen_sta_tables.py https://storage.googleapis.com/.../sta-gtfs-NNN.zip
+
+"latest" resolves the newest object in that bucket automatically -- the
+object's filename carries a crawl number that changes every time Mobility
+Database re-reads STA, so hardcoding a URL goes stale silently. Note that
+"latest" means the newest feed MIRRORED, which is not the same as the
+newest feed STA has published: the mirror is re-crawled on its own
+schedule, so a card can reach its expiry date before a replacement feed is
+available anywhere this script can reach. --status-json exists so that
+situation is detectable rather than silent; see
+.github/workflows/sta-timetable.yml, which reports it.
 
 Regenerate periodically (STA route/stop/trip changes are infrequent enough
 that this doesn't need to run on every build). Commit the flash header/cpp
@@ -43,8 +51,10 @@ committed (regenerating it is cheap, and it doesn't affect what firmware
 builds -- see sd_card_data/README.md, written once by this script).
 """
 
+import argparse
 import csv
 import io
+import json
 import struct
 import sys
 import urllib.request
@@ -81,6 +91,65 @@ HEADER_NOTE = (
     "// feed -- do not hand-edit. Re-run the script against a fresh feed to\n"
     "// update (see that script's docstring for where to get one).\n"
 )
+
+
+# Mobility Database's public bucket listing. Unauthenticated, and the only
+# route to this feed that doesn't go through Cloudflare -- see the module
+# docstring.
+MDB_LISTING_URL = (
+    "https://storage.googleapis.com/storage/v1/b/mdb-latest/o"
+    "?prefix=us-washington-spokane-transit-authority"
+)
+
+
+def resolve_latest_feed_url() -> tuple:
+    """(download URL, object name, mirror timestamp) for the newest STA feed.
+
+    Sorted by the object's own `updated` rather than by the crawl number in
+    its filename: the number is not guaranteed to be zero-padded or
+    monotonic across re-crawls, and a string sort over it would silently
+    pick feed 99 over feed 290.
+    """
+    with urllib.request.urlopen(MDB_LISTING_URL, timeout=30) as resp:
+        listing = json.load(resp)
+    items = listing.get("items") or []
+    if not items:
+        raise SystemExit(
+            "no STA feed found in the Mobility Database mirror.\n"
+            "Pass a .zip path or URL directly instead: the mirror may have "
+            "been reorganized, or the agency slug may have changed."
+        )
+    newest = max(items, key=lambda it: it.get("updated", ""))
+    return newest["mediaLink"], newest["name"], newest.get("updated", "")
+
+
+def feed_status(zf: zipfile.ZipFile, source_name: str) -> dict:
+    """Machine-readable summary of the feed just processed.
+
+    Written to a tracked JSON file so the repository itself records when the
+    generated SD card stops being valid -- otherwise that date lives only in
+    a binary nobody can read without a board, and the first sign of an
+    expired card is the board saying so on a morning someone needed it.
+    """
+    windows = [(int(r["start_date"]), int(r["end_date"])) for r in read_csv(zf, "calendar.txt")]
+    stop_times_path = SD_DATA_DIR / "stop_times.bin"
+    return {
+        "source": source_name,
+        # GTFS dates are YYYYMMDD integers; kept as strings so nothing
+        # downstream has to remember they aren't ordinary numbers.
+        "valid_from": str(min(w[0] for w in windows)) if windows else "",
+        "valid_until": str(max(w[1] for w in windows)) if windows else "",
+        # Row counts in the FEED, not in the generated tables -- those
+        # differ by design (gen_route_table skips non-numeric route_ids, for
+        # one), and a reader who assumed otherwise would think the generator
+        # had silently lost data. They are here to detect that the feed
+        # changed at all, which is the only thing they are good for.
+        "feed_routes": sum(1 for _ in read_csv(zf, "routes.txt")),
+        "feed_stops": sum(1 for _ in read_csv(zf, "stops.txt")),
+        "feed_trips": sum(1 for _ in read_csv(zf, "trips.txt")),
+        "sd_bytes": sum(p.stat().st_size for p in sorted(SD_DATA_DIR.glob("*.bin"))),
+        "stop_times_bytes": stop_times_path.stat().st_size if stop_times_path.exists() else 0,
+    }
 
 
 def load_zip(source: str) -> zipfile.ZipFile:
@@ -507,13 +576,41 @@ def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print(__doc__)
-        sys.exit(1)
-    zf = load_zip(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "source",
+        help='a .zip path, a .zip URL, or "latest" to resolve the newest '
+             "Mobility Database mirror of STA's feed",
+    )
+    parser.add_argument(
+        "--status-json",
+        type=Path,
+        help="also write a JSON summary here (feed validity window, row "
+             "counts, generated byte sizes). Tracked in the repo so the "
+             "card's expiry date is readable without a board.",
+    )
+    args = parser.parse_args()
+
+    source = args.source
+    source_name = source
+    if source == "latest":
+        source, source_name, mirrored_at = resolve_latest_feed_url()
+        print(f"resolved latest: {source_name} (mirrored {mirrored_at})")
+
+    zf = load_zip(source)
     gen_route_table(zf)
     gen_stop_table(zf)
     gen_sd_binaries(zf)
+
+    if args.status_json:
+        status = feed_status(zf, source_name)
+        args.status_json.parent.mkdir(parents=True, exist_ok=True)
+        # Trailing newline and sorted keys so a regenerated file that didn't
+        # actually change produces an empty diff rather than a commit.
+        args.status_json.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {args.status_json} (valid {status['valid_from']}..{status['valid_until']})")
 
 
 if __name__ == "__main__":

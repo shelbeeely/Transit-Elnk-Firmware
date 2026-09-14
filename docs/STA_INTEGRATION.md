@@ -69,8 +69,56 @@ Regenerate periodically (STA doesn't renumber routes or move stops often —
 this isn't a per-build step):
 
 ```
+python3 tools/gen_sta_tables.py latest
 python3 tools/gen_sta_tables.py <path-or-url-to-a-fresh-sta-gtfs.zip>
 ```
+
+`latest` resolves the newest object in the Mobility Database mirror by
+itself, so nothing has to hardcode a URL that carries a crawl number and
+goes stale silently.
+
+## Keeping the timetable from expiring
+
+The static timetable has a hard expiry date: STA publishes a feed covering a
+service period of a few months, and past its last day the calendar activates
+no services at all. The board handles this correctly — it reports that its
+card needs regenerating rather than showing an empty screen — but nobody
+should be finding that out from the board on a morning they needed it.
+
+`.github/workflows/sta-timetable.yml` runs weekly and:
+
+1. regenerates from the newest mirrored feed,
+2. **builds the firmware before committing anything** — the route/stop
+   tables are compiled into the image, and a regenerated table that doesn't
+   build, pushed to `main` by a scheduled job nobody is watching, is the one
+   way this could do real damage,
+3. commits the regenerated flash tables when the feed actually changed (the
+   generator is deterministic, so an unchanged feed produces a byte-identical
+   tree and no commit),
+4. publishes the SD payload as a release asset (`sta-card-<expiry>.zip`),
+5. opens **one** issue — updated, never duplicated — when the card has 28
+   days or fewer left.
+
+`docs/sta_feed_status.json` is the tracked record of what the current card
+covers, so the expiry date is readable without a board:
+
+```json
+{ "valid_from": "20260517", "valid_until": "20260919", ... }
+```
+
+### What it can't do
+
+- **It can't put files on the card.** That step is yours; the issue says so
+  and links the zip.
+- **It can't conjure a feed STA hasn't published.** The Mobility Database
+  mirror is re-crawled on its own schedule, and STA's own site sits behind
+  Cloudflare (the reason this project reads the mirror at all — see above),
+  so "no newer feed yet" is a real and expected outcome. The workflow
+  reports it as that rather than as a failure, and distinguishes it from
+  "a new card is ready". If you find a fresher feed somewhere else, run the
+  workflow manually with its URL.
+- **Real-time departures are unaffected** by an expired card either way.
+  Only the fully-offline timetable tier is.
 
 ## SD card: full static GTFS data (optional)
 

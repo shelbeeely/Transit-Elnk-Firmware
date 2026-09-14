@@ -1,0 +1,223 @@
+name: STA timetable
+
+# Keeps the Spokane Transit static timetable current -- the data behind the
+# board's fully-offline departure screen (docs/OFFLINE_AND_BUS_WIFI.md).
+#
+# That data has an expiry date baked into it. STA publishes a feed covering
+# a service period of a few months; past its last day the calendar activates
+# no services at all, the offline lookup returns nothing, and the board
+# correctly but unhelpfully reports that its card needs regenerating. The
+# whole point of this workflow is that nobody should find that out from the
+# board on a morning they needed it.
+#
+# What it can and cannot do, stated plainly:
+#
+#   * It CAN regenerate the flash-baked route/stop tables (tracked source)
+#     and commit them, and it CAN publish the SD card payload as a release
+#     asset you download and copy across.
+#   * It CANNOT put files on a physical SD card. That step is yours, and the
+#     issue this opens says so.
+#   * It CANNOT conjure a feed STA has not published. The Mobility Database
+#     mirror is re-crawled on its own schedule, so "no newer feed" is a real
+#     and expected outcome -- reported as such rather than as a failure.
+
+on:
+  schedule:
+    # Mondays, 16:00 UTC (~9am Pacific). Weekly is plenty: STA service
+    # changes land a few times a year, and the run is cheap.
+    - cron: "0 16 * * 1"
+  workflow_dispatch:
+    inputs:
+      feed_url:
+        description: "GTFS .zip URL to use instead of the newest mirrored feed"
+        required: false
+        type: string
+      force_release:
+        description: "Publish a card even if nothing changed"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+# A second run committing to main while the first is mid-push would be a
+# race for no benefit; this is a weekly job with no reason to overlap.
+concurrency:
+  group: sta-timetable
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Remember the card we already have
+        id: before
+        run: |
+          set -euo pipefail
+          if [ -f docs/sta_feed_status.json ]; then
+            echo "valid_until=$(python3 -c "import json;print(json.load(open('docs/sta_feed_status.json'))['valid_until'])")" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid_until=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Regenerate from the newest available feed
+        id: gen
+        run: |
+          set -euo pipefail
+          SOURCE="${{ inputs.feed_url }}"
+          [ -n "$SOURCE" ] || SOURCE=latest
+          python3 tools/gen_sta_tables.py "$SOURCE" --status-json docs/sta_feed_status.json
+
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import datetime, json
+          s = json.load(open("docs/sta_feed_status.json"))
+          until = s["valid_until"]
+          # GTFS dates are YYYYMMDD in the agency's local time. Comparing on
+          # UTC dates can be a few hours off at the boundary, which is
+          # immaterial against a "warn 28 days out" threshold and not worth
+          # a timezone dependency to fix.
+          expiry = datetime.date(int(until[:4]), int(until[4:6]), int(until[6:]))
+          days = (expiry - datetime.date.today()).days
+          for k, v in {
+              "valid_until": until,
+              "valid_until_human": expiry.isoformat(),
+              "days_left": days,
+              "source": s["source"],
+              "sd_bytes": s["sd_bytes"],
+          }.items():
+              print(f"{k}={v}")
+          PY
+
+      - name: Did anything tracked change?
+        id: changed
+        run: |
+          set -euo pipefail
+          # The generator is deterministic, so an unchanged feed produces a
+          # byte-identical tree and this is empty -- which is the normal
+          # weekly outcome and must not create a commit.
+          if [ -n "$(git status --porcelain -- include/ src/ docs/sta_feed_status.json)" ]; then
+            echo "tracked=true" >> "$GITHUB_OUTPUT"
+            git status --porcelain -- include/ src/ docs/sta_feed_status.json
+          else
+            echo "tracked=false" >> "$GITHUB_OUTPUT"
+            echo "no change: the newest mirrored feed is the one already generated from"
+          fi
+
+      - name: Install PlatformIO
+        if: steps.changed.outputs.tracked == 'true'
+        run: pip install -U platformio
+
+      - name: Build the firmware before committing anything
+        if: steps.changed.outputs.tracked == 'true'
+        # The route/stop tables are compiled into the image. A regenerated
+        # table that doesn't build, pushed straight to main by a scheduled
+        # job nobody is watching, is the one way this workflow could do real
+        # damage -- so it proves the build first.
+        run: pio run -e xteink_x4
+
+      - name: Commit the regenerated tables
+        if: steps.changed.outputs.tracked == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add include/ src/ docs/sta_feed_status.json
+          git commit -m "Regenerate STA tables from ${{ steps.gen.outputs.source }}
+
+          Valid ${{ steps.gen.outputs.valid_until_human }} and earlier. Generated by
+          .github/workflows/sta-timetable.yml; the SD card payload for this
+          feed is published as release sta-${{ steps.gen.outputs.valid_until }}."
+          git push
+
+      - name: Package the SD card payload
+        if: steps.changed.outputs.tracked == 'true' || inputs.force_release
+        run: |
+          set -euo pipefail
+          # Zipped from inside sd_card_data/ so the archive expands to
+          # `sta/...`, which is exactly the directory that goes at the root
+          # of the card -- see docs/STA_INTEGRATION.md.
+          (cd sd_card_data && zip -qr ../sta-card-${{ steps.gen.outputs.valid_until }}.zip sta)
+          ls -l sta-card-${{ steps.gen.outputs.valid_until }}.zip
+
+      - name: Publish it
+        if: steps.changed.outputs.tracked == 'true' || inputs.force_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="sta-${{ steps.gen.outputs.valid_until }}"
+          ASSET="sta-card-${{ steps.gen.outputs.valid_until }}.zip"
+          NOTES="Spokane Transit static timetable, valid through **${{ steps.gen.outputs.valid_until_human }}**.
+
+          Generated from \`${{ steps.gen.outputs.source }}\`.
+
+          Unzip and copy the \`sta/\` folder to the root of the board's microSD card. The board reads it with no network at all; see [docs/OFFLINE_AND_BUS_WIFI.md](https://github.com/${{ github.repository }}/blob/main/docs/OFFLINE_AND_BUS_WIFI.md)."
+
+          # A re-run for the same feed replaces the asset rather than
+          # failing on an existing tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" --title "STA timetable through ${{ steps.gen.outputs.valid_until_human }}" --notes "$NOTES"
+          fi
+
+      - name: Tell someone, if the card is running out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DAYS=${{ steps.gen.outputs.days_left }}
+          TITLE="STA timetable card expires ${{ steps.gen.outputs.valid_until_human }}"
+
+          # 28 days: long enough to order a card, notice the mail, and copy
+          # files without it being urgent. Below zero the board is already
+          # falling back to "no schedule", so the wording changes.
+          if [ "$DAYS" -gt 28 ]; then
+            echo "card valid for $DAYS more days; nothing to report"
+            # Close a stale warning from a previous, shorter window.
+            for n in $(gh issue list --label sta-timetable --state open --json number --jq '.[].number'); do
+              gh issue close "$n" --comment "A newer feed now covers through ${{ steps.gen.outputs.valid_until_human }} ($DAYS days out)."
+            done
+            exit 0
+          fi
+
+          if [ "${{ steps.changed.outputs.tracked }}" = "true" ]; then
+            BODY="A fresh card is ready: [\`sta-card-${{ steps.gen.outputs.valid_until }}.zip\`](https://github.com/${{ github.repository }}/releases/tag/sta-${{ steps.gen.outputs.valid_until }}).
+
+          Unzip it and copy the \`sta/\` folder to the root of the board's microSD card.
+
+          Valid through **${{ steps.gen.outputs.valid_until_human }}** (${DAYS} days)."
+          elif [ "$DAYS" -lt 0 ]; then
+            BODY="The card on the board expired **${{ steps.gen.outputs.valid_until_human }}**, and no newer feed is available yet.
+
+          The newest feed the [Mobility Database mirror](https://storage.googleapis.com/storage/v1/b/mdb-latest/o?prefix=us-washington-spokane-transit-authority) carries is still \`${{ steps.gen.outputs.source }}\`. STA's own site is behind Cloudflare and can't be fetched directly, so there is nowhere else to look automatically.
+
+          Until a new feed is mirrored, the board falls back to its cached board and live data. Real-time departures are unaffected; only the fully-offline timetable is.
+
+          If you find a newer feed elsewhere, run this workflow manually with its URL."
+          else
+            BODY="The card on the board is valid through **${{ steps.gen.outputs.valid_until_human }}** (${DAYS} days), and no newer feed has been mirrored yet.
+
+          The newest feed available is still \`${{ steps.gen.outputs.source }}\` — the same one the current card came from. This workflow re-checks weekly and will publish a new card as soon as one appears."
+          fi
+
+          # One open issue at a time: a weekly job that files a new one every
+          # Monday for the same expiry is a job people mute.
+          EXISTING=$(gh issue list --label sta-timetable --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --title "$TITLE" --body "$BODY"
+            echo "updated issue #$EXISTING"
+          else
+            gh label create sta-timetable --description "Spokane Transit static timetable freshness" --color FFC72C 2>/dev/null || true
+            gh issue create --title "$TITLE" --body "$BODY" --label sta-timetable
+          fi

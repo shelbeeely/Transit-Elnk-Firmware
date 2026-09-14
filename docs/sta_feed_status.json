@@ -1,0 +1,10 @@
+{
+  "feed_routes": 83,
+  "feed_stops": 1665,
+  "feed_trips": 8396,
+  "sd_bytes": 2872987,
+  "source": "us-washington-spokane-transit-authority-sta-gtfs-290.zip",
+  "stop_times_bytes": 2671192,
+  "valid_from": "20260517",
+  "valid_until": "20260919"
+}

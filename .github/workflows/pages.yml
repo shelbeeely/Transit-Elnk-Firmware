@@ -63,7 +63,14 @@ jobs:
           print("all local refs resolve")
           PY
 
+      # enablement: true turns GitHub Pages on for the repository from here,
+      # instead of failing with "Get Pages site failed ... verify that the
+      # repository has Pages enabled" and requiring someone to find the
+      # setting by hand. The `pages: write` permission above is what allows
+      # it. Harmless once Pages is already on.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
