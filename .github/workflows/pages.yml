@@ -63,14 +63,21 @@ jobs:
           print("all local refs resolve")
           PY
 
-      # enablement: true turns GitHub Pages on for the repository from here,
-      # instead of failing with "Get Pages site failed ... verify that the
-      # repository has Pages enabled" and requiring someone to find the
-      # setting by hand. The `pages: write` permission above is what allows
-      # it. Harmless once Pages is already on.
+      # Pages must be switched on once, by hand, before this can deploy:
+      #   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+      # Until then this step fails with "Get Pages site failed ... verify
+      # that the repository has Pages enabled", and the deploy job is
+      # skipped. The build steps above still run, so a broken asset
+      # reference is still caught either way.
+      #
+      # `enablement: true` looks like it should remove that manual step and
+      # does not: it was tried here, and the default GITHUB_TOKEN cannot
+      # create a Pages site, only deploy to one that already exists --
+      #   ##[error]Create Pages site failed.
+      #   Error: Resource not accessible by integration
+      # It would need a PAT with repo-admin scope, which is a much larger
+      # credential to store than the one click it saves. Don't re-add it.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
