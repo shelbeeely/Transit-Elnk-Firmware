@@ -118,6 +118,11 @@
         <h3>Wake, draw, sleep</h3>
         <p>No always-on radio and no always-on screen. E-ink holds the last frame with the panel powered down entirely.</p>
       </article>
+      <article class="card">
+        <span class="tag">Maintenance</span>
+        <h3>Updates itself</h3>
+        <p>Drop a build on the settings page, or point it at a manifest and let it update on its own. One that can't complete a cycle gets rolled back.</p>
+      </article>
     </div>
   </div>
 </section>
@@ -470,7 +475,7 @@
       </div>
       <div class="limit">
         <h3>TLS certificates aren't pinned</h3>
-        <p>HTTPS connections currently skip verification. Fine on a home network, worth fixing before leaning on the bus Wi-Fi feature.</p>
+        <p>HTTPS connections currently skip verification. It matters most for firmware updates: whoever can intercept the download can also serve a matching checksum, so point automatic updates at a host you control.</p>
       </div>
       <div class="limit">
         <h3>Timetable cards need regenerating</h3>
@@ -482,7 +487,7 @@
       </div>
       <div class="limit">
         <h3>No hardware has run this yet</h3>
-        <p>It cross-compiles in CI and 231 host tests pass, but the panel-facing paths — SD, deep sleep, battery ADC — haven't been exercised on a physical board.</p>
+        <p>It cross-compiles in CI and 265 host tests pass, but the panel-facing paths — SD, deep sleep, battery ADC — haven't been exercised on a physical board. There's a bringup build and a serial self-test waiting for the first one.</p>
       </div>
     </div>
   </div>

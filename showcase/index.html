@@ -336,7 +336,7 @@ footer p{color:var(--mid);max-width:70ch}
     <table class="tbl">
       <tbody>
         <tr><th>Target</th><td>ESP32&#8209;C3 driving an SSD1677 e&#8209;ink panel, 800&times;480 at four grey levels, on PlatformIO and Arduino&#8209;ESP32 over the FreeInk SDK.</td></tr>
-        <tr><th>Testable by design</th><td>Every module splits into pure logic and a thin hardware shim, so parsing, filtering, trip planning, calendar maths and layout all run on the host. 231 tests, plus a real cross&#8209;compile, on every push.</td></tr>
+        <tr><th>Testable by design</th><td>Every module splits into pure logic and a thin hardware shim, so parsing, filtering, trip planning, calendar maths and layout all run on the host. 265 tests, plus a real cross&#8209;compile, on every push.</td></tr>
         <tr><th>A timetable in 2.6&nbsp;MB</th><td>222,598 <span class="mono">stop_times</span> rows packed into a custom binary format sorted by stop and time, so a lookup is a lower&#8209;bound binary search into the stop's block and then a second search inside it &mdash; about a kilobyte read for a typical stop.</td></tr>
         <tr><th>Time done properly</th><td>GTFS measures departures from noon minus twelve hours rather than midnight. That distinction only bites on the two daylight&#8209;saving days a year, and getting it wrong puts every evening bus an hour out. Tests cover both days.</td></tr>
         <tr><th>Inside the free tier</th><td>One API call per wake regardless of how much is configured &mdash; preset stops ride along in the same batched request. About 720 calls a month against a 1,500 limit.</td></tr>
