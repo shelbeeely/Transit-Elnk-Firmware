@@ -32,6 +32,7 @@
 #include <SdFat.h>
 
 #include "transit/sta_gtfs_binary.h"
+#include "transit/sta_static_schedule.h"
 
 namespace transit {
 namespace sta {
@@ -68,6 +69,17 @@ class StaSdStore {
   // the direct stop-code field, see docs/STA_INTEGRATION.md.
   std::vector<SdStopInfo> nearbyStops(double lat, double lon, double radiusMeters, int maxResults);
 
+  // The tables sta_static_schedule.h needs to answer "when is the next
+  // bus" from the timetable alone, with no network. Members are null for
+  // whatever isn't available, which that module already treats as "no
+  // schedule to offer" rather than an error -- so this is safe to call on
+  // a board with no card, an old card, or a partially-copied one.
+  //
+  // Returned by value each wake rather than cached: setup() always ends in
+  // deep sleep, so there is no session for a cache to live in (same
+  // reasoning as begin()'s attempted_ flag).
+  StaticScheduleTables scheduleTables();
+
  private:
   // Wraps one open FsFile as a BinaryTableReader (sta_gtfs_binary.h's
   // hardware-independent half only needs seek+read, both real SdFat
@@ -87,6 +99,13 @@ class StaSdStore {
   FileReader routesReader_;
   FileReader stopsReader_;
   FileReader tripsReader_;
+  // The static timetable (version-2 cards only -- see sta_gtfs_binary.h).
+  // Much larger than the three above: stop_times.bin alone is ~2.6MB for
+  // STA, which is nothing on an SD card but is the reason this data lives
+  // there rather than in flash.
+  FileReader stopTimesReader_;
+  FileReader calendarReader_;
+  FileReader calendarDatesReader_;
 };
 
 }  // namespace sta

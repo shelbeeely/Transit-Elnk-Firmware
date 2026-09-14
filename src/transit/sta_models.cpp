@@ -70,7 +70,15 @@ std::vector<Route> staDeparturesToRoutes(const std::vector<StaDeparture>& depart
     ScheduleItem item;
     item.internalItineraryId = dep.tripId;
     item.departureTimeEpoch = dep.departureEpoch;
-    item.scheduledDepartureTimeEpoch = dep.departureEpoch;
+    // Left at 0 deliberately. STA's GTFS-RT feed carries a predicted
+    // departure and nothing to compare it against -- the scheduled time
+    // lives only in the static feed (sta_static_schedule.h). Copying the
+    // prediction in here would make render_engine's scheduled-vs-realtime
+    // annotation report every STA bus as exactly on time, so a bus running
+    // eight minutes late would read "12m RT sch 18:12" with no delta: a
+    // confident, wrong claim rather than an absent one. 0 means "no
+    // scheduled time known", and the annotation is skipped.
+    item.scheduledDepartureTimeEpoch = 0;
     item.arrivalTimeEpoch = dep.departureEpoch;
     item.isRealTime = true;  // GTFS-RT is inherently a live prediction
     item.isCancelled = false;  // sta_feed_parser.h already drops SKIPPED updates

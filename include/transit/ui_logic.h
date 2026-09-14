@@ -27,6 +27,13 @@ struct DepartureRow {
   std::string headsign;    // itineraries[].merged_headsign, preferred per DATA_MODEL.md
   std::string stopName;    // closest_stop.stop_name
   int64_t departureTimeEpoch = 0;
+  // What the timetable says, ignoring real-time (v4's
+  // scheduled_departure_time -- see docs/API_CONTRACT.md). Equal to
+  // departureTimeEpoch when the feed isn't reporting real time, and 0 when
+  // the source didn't supply one at all. Rendered alongside a real-time
+  // chip so a late bus is visible as late rather than just "later than you
+  // expected" -- see render_engine.cpp's formatDepartureChip().
+  int64_t scheduledDepartureTimeEpoch = 0;
   bool isRealTime = false;
   bool isLast = false;
 };

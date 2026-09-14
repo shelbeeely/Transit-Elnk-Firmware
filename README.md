@@ -22,6 +22,7 @@ with `tools/refresh_screenshots.sh` after any layout change (see
 | ![Departure board](docs/screenshots/departure_board.png) **Normal board** | ![Preset trips](docs/screenshots/departure_board_with_presets.png) **With "Home"/"Work" preset trips** |
 | ![Focus mode](docs/screenshots/departure_board_focus_mode.png) **Focus mode** | ![Offline](docs/screenshots/departure_board_offline_cached.png) **Offline, showing cached data** |
 | ![Portrait](docs/screenshots/departure_board_portrait.png) **Portrait orientation** | ![Setup](docs/screenshots/setup_prompt.png) **First-run setup prompt** |
+| ![Timetable](docs/screenshots/departure_board_offline_timetable.png) **Offline, from the static timetable** | ![Scheduled vs realtime](docs/screenshots/departure_board_scheduled_vs_realtime.png) **Scheduled times beside real-time** |
 
 ## Hardware
 
@@ -74,6 +75,9 @@ portal for things that aren't part of first-run setup:
   configured and how a plan is computed.
 - **Focus mode** — a reduced-clutter toggle that draws only the 1-2
   soonest departures, larger, instead of the full multi-route board.
+- **Time zone** — a POSIX TZ string (default Pacific with US DST rules).
+  Decides which day's timetable the board reads and when a departure counts
+  as past, so it matters more than it looks.
 - **Bus Wi-Fi sign-in** — optionally name an open Wi-Fi network (onboard
   transit Wi-Fi, say) to fall back on when the home network isn't in range,
   plus the email or phone to hand its sign-in page. The board reads that
@@ -95,6 +99,17 @@ already knows:
   without SNTP. It's marked with a leading `~`, and the board stops showing
   it once its accumulated error bound gets too wide to be useful (~a day
   offline at the hourly default) rather than presenting a guess as the time.
+- Once the cache empties, the board falls back to **STA's published
+  timetable** read straight off the SD card — the whole service day,
+  holidays included, for as long as the feed is valid. That keeps working
+  a week into a trip, on a cold boot, with no network at all. It's marked
+  `Timetable` so it never passes for live data, and the board says
+  "Timetable expired" rather than printing times for service that has
+  changed.
+
+Departures are drawn from one of three clearly-labelled sources — **live**,
+**cached**, or **timetable** — and the board never lets one pass for
+another.
 
 Both are covered in [`docs/OFFLINE_AND_BUS_WIFI.md`](docs/OFFLINE_AND_BUS_WIFI.md),
 including an honest account of the clock's accuracy and of what the
@@ -133,9 +148,9 @@ layout change so the images above match what the firmware actually draws.
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Boot → setup-if-unprovisioned → Wi-Fi + fetch → render → deep sleep |
-| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), preset "Home"/"Work" trip-transfer planning (`trip_planner` — see `docs/TRIP_PLANNER.md`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`), offline support (`time_keeper` RTC-memory clock, `offline_cache` last-known-good board, `captive_portal` open-network sign-in — see `docs/OFFLINE_AND_BUS_WIFI.md`) |
+| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), preset "Home"/"Work" trip-transfer planning (`trip_planner` — see `docs/TRIP_PLANNER.md`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`), offline support (`local_time` timezone/GTFS service days, `time_keeper` RTC-memory clock, `offline_cache` last-known-good board, `sta_static_schedule` SD-card timetable, `captive_portal` open-network sign-in — see `docs/OFFLINE_AND_BUS_WIFI.md`) |
 | `test/` | Host-side Unity tests for the hardware-independent modules (`pio test -e native`) |
-| `tools/gen_sta_tables.py` | Regenerates the baked-in STA route/stop tables from a fresh GTFS feed |
+| `tools/gen_sta_tables.py` | Regenerates the baked-in STA route/stop tables, and the SD card's full static GTFS including the timetable, from a fresh feed |
 | `tools/refresh_screenshots.sh`, `tools/png_recompress.py` | Regenerate and shrink the rendered PNGs under `docs/screenshots/` |
 | `freeink-sdk/` | Vendored SDK submodule — display driver, UI framework, board config, power management, etc. |
 | `docs/` | Design spec this firmware is built against (see table below) |
@@ -157,4 +172,4 @@ implementation time.
 | [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) | API key tier limits and what "continuous" polling actually costs |
 | [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) | Spokane Transit Authority: the second, optional data source — how it's fetched, the baked-in route/stop tables, and its compliance notes |
 | [`docs/TRIP_PLANNER.md`](docs/TRIP_PLANNER.md) | Preset "Home"/"Work" trip-transfer chains — how a plan is computed from `stop_departures()` data, direction disambiguation, the settings UX, and known limitations |
-| [`docs/OFFLINE_AND_BUS_WIFI.md`](docs/OFFLINE_AND_BUS_WIFI.md) | What works with no network: the RTC-memory approximate clock and its real accuracy, the NVS board cache and how it ages, and captive-portal sign-in on an open network (detection, form discovery, manual override, limitations) |
+| [`docs/OFFLINE_AND_BUS_WIFI.md`](docs/OFFLINE_AND_BUS_WIFI.md) | What works with no network: local time and GTFS service days, the RTC-memory approximate clock and its real accuracy, the NVS board cache and how it ages, the SD-card static timetable (format, holidays, expiry), scheduled-vs-real-time comparison, and captive-portal sign-in on an open network |

@@ -287,6 +287,12 @@ li:hover{background:#f0f0f0}
 <option value="landscape">Horizontal (landscape)</option>
 <option value="portrait">Vertical (portrait)</option>
 </select>
+<label>Time zone</label>
+<input id="tz" placeholder="PST8PDT,M3.2.0,M11.1.0">
+<p class="leg-summary">A POSIX time zone string. The default is Pacific
+time with US daylight-saving rules. This decides which day's timetable the
+board reads and when a departure counts as past, so it matters more than it
+looks &mdash; see docs/OFFLINE_AND_BUS_WIFI.md.</p>
 <button onclick="saveOrientation()">Save</button>
 <div id="orientation-msg" class="msg"></div>
 </section>
@@ -368,12 +374,22 @@ function setMsg(id,text,cls){
 
 fetch('/getorientation').then(function(r){return r.json();}).then(function(s){
   el('orientation').value = s.portrait ? 'portrait' : 'landscape';
+  el('tz').value = s.tz || '';
 }).catch(function(){});
 
 function saveOrientation(){
   var portrait = el('orientation').value === 'portrait';
   setMsg('orientation-msg','Saving...','');
-  fetch('/setorientation',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'portrait='+(portrait?'1':'0')})
+  // The tz key is omitted while the field is empty, which it is until
+  // /getorientation resolves -- and permanently so if that fetch failed.
+  // Sending it anyway would let a quick Save silently reset a configured
+  // timezone. Omitting it means "leave unchanged" server-side; an empty
+  // value already means "use the default" (local_time.h), so nothing is
+  // lost by not being able to send one.
+  var tz = el('tz').value.trim();
+  var body = 'portrait='+(portrait?'1':'0');
+  if(tz) body += '&tz='+encodeURIComponent(tz);
+  fetch('/setorientation',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(function(r){return r.json();}).then(function(res){
       if(res.ok){
         fetch('/getstastop').then(function(r){return r.json();}).then(function(s){
@@ -729,6 +745,7 @@ void SetupFlow::handleGetOrientation() {
   if (!requireSettingsMode()) return;
   JsonDocument doc;
   doc["portrait"] = configStore_.displayPortrait();
+  doc["tz"] = configStore_.timezone();
   std::string body;
   serializeJson(doc, body);
   server_.send(200, "application/json", body.c_str());
@@ -740,6 +757,20 @@ void SetupFlow::handleSetOrientation() {
   std::string portraitArg = server_.hasArg("portrait") ? server_.arg("portrait").c_str() : "";
   bool portrait = portraitArg == "1" || portraitArg == "true";
   configStore_.setDisplayPortrait(portrait);
+
+  // Not validated here: a POSIX TZ string is parsed by the C library, and
+  // there is no cheap way to tell a typo from an exotic-but-valid rule
+  // without just installing it. An unparseable string makes the library
+  // fall back to UTC, which is visible immediately on the next render as a
+  // wrong clock -- a fast, self-correcting failure. An empty value means
+  // "use the default" rather than "use UTC" (see local_time.h's
+  // applyTimezone()), so clearing the field is safe.
+  // Absent means "leave unchanged" -- see saveOrientation()'s comment on
+  // why the page omits it rather than sending an empty string.
+  if (server_.hasArg("tz") && server_.arg("tz").length() > 0) {
+    configStore_.setTimezone(server_.arg("tz").c_str());
+  }
+
   settingsSaved_ = true;
   server_.send(200, "application/json", "{\"ok\":true}");
 }

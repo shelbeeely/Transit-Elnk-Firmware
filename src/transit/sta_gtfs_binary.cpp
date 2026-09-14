@@ -11,7 +11,8 @@ namespace sta {
 
 namespace {
 
-constexpr char kMagic[4] = {'S', 'T', 'A', '1'};
+constexpr char kMagicV1[4] = {'S', 'T', 'A', '1'};
+constexpr char kMagicV2[4] = {'S', 'T', 'A', '2'};
 
 uint32_t readU32LE(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -30,7 +31,19 @@ float readF32LE(const uint8_t* p) {
 bool readTableHeader(BinaryTableReader& reader, TableHeader& out) {
   uint8_t buf[kTableHeaderSize];
   if (!reader.readAt(0, buf, kTableHeaderSize)) return false;
-  if (std::memcmp(buf, kMagic, sizeof(kMagic)) != 0) return false;
+
+  // Both generations are readable. A version-1 card predates the static
+  // timetable; its routes/stops/trips are still perfectly good, but
+  // trips.bin's serviceIndex byte was reserved-and-zero back then, so
+  // schedule lookups have to refuse it rather than believe every trip runs
+  // on service 0 -- see TableHeader::version.
+  if (std::memcmp(buf, kMagicV2, sizeof(kMagicV2)) == 0) {
+    out.version = 2;
+  } else if (std::memcmp(buf, kMagicV1, sizeof(kMagicV1)) == 0) {
+    out.version = 1;
+  } else {
+    return false;
+  }
 
   out.recordCount = readU32LE(buf + 4);
   out.recordSize = readU32LE(buf + 8);
@@ -71,6 +84,61 @@ bool findRecordByKey(BinaryTableReader& reader, const TableHeader& header, uint3
     }
   }
   return false;
+}
+
+bool findFirstRecordAtLeast(BinaryTableReader& reader, const TableHeader& header, uint32_t key,
+                            uint32_t& outIndex) {
+  uint32_t lo = 0;
+  uint32_t hi = header.recordCount;
+  while (lo < hi) {
+    const uint32_t mid = lo + (hi - lo) / 2;
+    uint8_t keyBuf[4];
+    if (!reader.readAt(kTableHeaderSize + mid * header.recordSize, keyBuf, sizeof(keyBuf))) {
+      return false;
+    }
+    if (readU32LE(keyBuf) < key) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  outIndex = lo;
+  return true;
+}
+
+bool readRecordAt(BinaryTableReader& reader, const TableHeader& header, uint32_t index,
+                  std::vector<uint8_t>& outRecord) {
+  if (index >= header.recordCount) return false;
+  outRecord.resize(header.recordSize);
+  return reader.readAt(kTableHeaderSize + index * header.recordSize, outRecord.data(),
+                       header.recordSize);
+}
+
+bool decodeStopTime(const uint8_t* record, SdStopTime& out) {
+  if (record == nullptr) return false;
+  out.stopCode = readU32LE(record);
+  out.tripId = readU32LE(record + 4);
+  out.departureSeconds = readU32LE(record + 8);
+  return true;
+}
+
+bool decodeCalendarEntry(const uint8_t* record, SdCalendarEntry& out) {
+  if (record == nullptr) return false;
+  out.serviceIndex = readU32LE(record);
+  out.daysMask = record[4];
+  // bytes 5-7 reserved
+  out.startDate = static_cast<int32_t>(readU32LE(record + 8));
+  out.endDate = static_cast<int32_t>(readU32LE(record + 12));
+  return true;
+}
+
+bool decodeCalendarException(const uint8_t* record, SdCalendarException& out) {
+  if (record == nullptr) return false;
+  out.date = static_cast<int32_t>(readU32LE(record));
+  out.serviceIndex = record[4];
+  out.exceptionType = record[5];
+  // bytes 6-7 reserved
+  return true;
 }
 
 bool readBlobString(BinaryTableReader& reader, const TableHeader& header, uint32_t offset,
@@ -164,6 +232,10 @@ bool lookupSdTrip(BinaryTableReader& reader, uint32_t tripId, SdTripInfo& out) {
   out.tripId = readU32LE(record.data());
   out.routeId = readU32LE(record.data() + 4);
   out.directionId = record[8];
+  // Reserved-and-zero on a version-1 card. Left as 0 there rather than
+  // special-cased: the schedule lookup refuses a version-1 table outright
+  // (sta_static_schedule.h), so nothing ever reads this byte from one.
+  out.serviceIndex = record[9];
   const uint32_t headsignOffset = readU32LE(record.data() + 12);
   return readBlobString(reader, header, headsignOffset, out.headsign);
 }

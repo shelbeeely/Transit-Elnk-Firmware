@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "transit/local_time.h"
 #include "transit/trip_planner.h"
 
 namespace transit {
@@ -156,6 +157,15 @@ class ConfigStore {
   // render_engine.h's setFocusMode().
   bool focusMode();
   void setFocusMode(bool enabled);
+
+  // POSIX TZ string for local time (local_time.h). Everything that has to
+  // agree with a printed timetable depends on this: which GTFS service day
+  // is "today", whether a departure has passed, and the sleep window's
+  // notion of overnight. Defaults to Pacific with US DST rules
+  // (kDefaultPosixTz) rather than UTC -- a board left unconfigured should
+  // be right for where this firmware was written, not eight hours off.
+  std::string timezone();
+  void setTimezone(const std::string& posixTz);
 
   // --- Bus Wi-Fi captive-portal auto-login (captive_portal.h) -------------
   //

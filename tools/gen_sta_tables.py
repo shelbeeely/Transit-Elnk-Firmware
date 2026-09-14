@@ -64,7 +64,16 @@ SD_DATA_DIR = REPO_ROOT / "sd_card_data" / "sta"
 # blob of NUL-terminated UTF-8 strings that fixed-record fields reference by
 # blob-relative uint32 offset. One format, three tables -- see
 # sta_gtfs_binary.h for the on-device reader this pairs with.
-SD_MAGIC = b"STA1"
+# Bumped from "STA1" when stop_times/calendar/calendar_dates were added and
+# trips.bin grew a serviceIndex in what had been a reserved byte. A firmware
+# reading an older "STA1" card still gets correct routes/stops/trips (none of
+# those fields changed meaning for an existing reader) but must treat the
+# static timetable as unavailable -- that reserved byte reads as service
+# index 0 on an old card, which would be a silently wrong answer rather than
+# an absent one. sta_gtfs_binary.h's readTableHeader() accepts both and
+# reports which, so the firmware can make exactly that distinction.
+SD_MAGIC = b"STA2"
+SD_MAGIC_LEGACY = b"STA1"
 SD_HEADER_STRUCT = struct.Struct("<4sIII")  # magic, recordCount, recordSize, blobOffset
 
 HEADER_NOTE = (
@@ -277,6 +286,10 @@ def write_indexed_table(path: Path, records: list, blob_parts: list) -> None:
     """
     if not records:
         raise ValueError(f"no records for {path}")
+    # blob_parts is empty for the purely-numeric tables (stop_times,
+    # calendar, calendar_dates) -- they carry no text of their own, since
+    # every string a scheduled departure needs is already in trips.bin or
+    # routes.bin and is reached by id.
     key_struct = struct.Struct("<I")
     record_size = 4 + len(records[0][1])
     body = b"".join(key_struct.pack(key) + rest for key, rest in records)
@@ -306,6 +319,113 @@ class BlobBuilder:
         self.offsets[s] = offset
         self.size += len(encoded)
         return offset
+
+
+def gen_schedule_binaries(zf: zipfile.ZipFile, trips: list, service_index: dict) -> None:
+    """sd_card_data/sta/{stop_times,calendar,calendar_dates}.bin -- the static
+    timetable itself, so the board can show scheduled departures with no
+    network at all. See docs/OFFLINE_AND_BUS_WIFI.md and sta_gtfs_binary.h.
+
+    These are much bigger than the other tables (stop_times is ~2.7MB against
+    a few hundred KB for the rest) but they are the only ones that answer
+    "when is the next bus" rather than "what is this thing called", which is
+    what makes an offline board useful rather than merely non-blank.
+    """
+    stop_code_for_id = {}
+    for r in read_csv(zf, "stops.txt"):
+        code = r["stop_code"].strip()
+        if code.isdigit():
+            stop_code_for_id[r["stop_id"].strip()] = int(code)
+
+    known_trip_ids = {int(r["trip_id"]) for r in trips}
+
+    def to_seconds(hhmmss: str) -> int:
+        """GTFS times run past 24:00:00 for trips that begin before midnight
+        and end after it -- STA's feed reaches 25:10:00. They are measured
+        from noon-minus-12h of the service day, NOT from midnight; see
+        include/transit/local_time.h for why that distinction matters on the
+        two DST days a year."""
+        h, m, sec = (int(x) for x in hhmmss.split(":"))
+        return h * 3600 + m * 60 + sec
+
+    # --- stop_times.bin: stopCode(u32) -> tripId(u32), departureSec(u32)
+    #
+    # Unlike every other table here, this one holds MANY records per key --
+    # the lookup is a lower-bound search to the first record for a stop, then
+    # a forward scan while the key still matches. Sorting by (stopCode,
+    # departureSec) is what makes that scan come out in departure order, so
+    # the reader stops at the first match after "now" instead of reading the
+    # whole block.
+    skipped = 0
+    rows = []
+    for r in read_csv(zf, "stop_times.txt"):
+        stop_code = stop_code_for_id.get(r["stop_id"].strip())
+        trip_id = r["trip_id"].strip()
+        departure = r["departure_time"].strip()
+        # A stop with no numeric stop_code can't be addressed from a physical
+        # stop sign, an unknown trip can't be resolved against trips.bin, and
+        # a blank departure_time is a non-timepoint row with nothing to show.
+        if stop_code is None or not trip_id.isdigit() or int(trip_id) not in known_trip_ids or not departure:
+            skipped += 1
+            continue
+        rows.append((stop_code, to_seconds(departure), int(trip_id)))
+
+    rows.sort()  # by stopCode, then departureSec, then tripId
+    records = [(stop_code, struct.pack("<II", trip_id, dep)) for stop_code, dep, trip_id in rows]
+    write_indexed_table(SD_DATA_DIR / "stop_times.bin", records, [])
+
+    # --- calendar.bin: serviceIndex(u32) -> daysMask(u8)+3 reserved,
+    # startDate(u32 as YYYYMMDD), endDate(u32)
+    #
+    # daysMask is indexed by struct tm's tm_wday (bit 0 = Sunday), not by
+    # calendar.txt's own column order (which starts at Monday) -- the
+    # firmware has a tm_wday in hand and no reason to renumber it.
+    weekday_columns = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+    cal_records = []
+    for r in read_csv(zf, "calendar.txt"):
+        idx = service_index.get(r["service_id"])
+        if idx is None:
+            continue  # a service no trip references is dead weight
+        mask = 0
+        for bit, column in enumerate(weekday_columns):
+            if r[column].strip() == "1":
+                mask |= 1 << bit
+        cal_records.append((idx, struct.pack("<B3xII", mask, int(r["start_date"]), int(r["end_date"]))))
+    cal_records.sort()
+    write_indexed_table(SD_DATA_DIR / "calendar.bin", cal_records, [])
+
+    # --- calendar_dates.bin: date(u32 YYYYMMDD) -> serviceIndex(u8),
+    # exceptionType(u8: 1 = added, 2 = removed), 2 reserved
+    #
+    # Keyed on the date, not the service, because the question the firmware
+    # asks is "what exceptions apply today" -- one lower-bound search per
+    # wake instead of one per service. Holiday schedules live here, and
+    # ignoring them would show a full weekday timetable on Thanksgiving.
+    exception_records = []
+    for r in read_csv(zf, "calendar_dates.txt"):
+        idx = service_index.get(r["service_id"])
+        if idx is None:
+            continue
+        exception_records.append((int(r["date"]), struct.pack("<BB2x", idx, int(r["exception_type"]))))
+    exception_records.sort()
+    # calendar_dates.txt is genuinely optional -- a feed with no holiday
+    # exceptions has nothing to write, and sta_static_schedule.h already
+    # treats a missing file as "no exceptions" rather than an error. Raising
+    # here would abort the run after stop_times.bin and calendar.bin were
+    # already written, leaving a half-generated card. A stale file from a
+    # previous feed is removed so it can't outlive the data it came from.
+    exceptions_path = SD_DATA_DIR / "calendar_dates.bin"
+    if exception_records:
+        write_indexed_table(exceptions_path, exception_records, [])
+    elif exceptions_path.exists():
+        exceptions_path.unlink()
+
+    validity = [(int(r["start_date"]), int(r["end_date"])) for r in read_csv(zf, "calendar.txt")]
+    window = f"{min(v[0] for v in validity)}..{max(v[1] for v in validity)}" if validity else "unknown"
+    size_mb = (SD_DATA_DIR / "stop_times.bin").stat().st_size / 1024 / 1024
+    print(f"wrote {SD_DATA_DIR}/{{stop_times,calendar,calendar_dates}}.bin "
+          f"({len(records):,} stop_times rows in {size_mb:.2f} MB, {len(cal_records)} services, "
+          f"{len(exception_records)} date exceptions, valid {window}, {skipped:,} rows skipped)")
 
 
 def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
@@ -343,8 +463,20 @@ def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
         ))
     write_indexed_table(SD_DATA_DIR / "stops.bin", records, blob.parts)
 
-    # --- trips.bin: tripId(u32) -> routeId(u32), directionId(u8)+3 reserved,
-    # headsignOffset(u32)
+    # --- trips.bin: tripId(u32) -> routeId(u32), directionId(u8),
+    # serviceIndex(u8), 2 reserved, headsignOffset(u32)
+    #
+    # service_id is a string in STA's feed ("671.0.1", not a number), so it
+    # can't be stored or keyed on directly. Each distinct value gets an
+    # index instead, assigned here and shared with calendar.bin /
+    # calendar_dates.bin below. It fits in a u8 because the feed has 24 of
+    # them; the assert keeps that from becoming a silent truncation if STA
+    # ever restructures its calendar.
+    service_ids = sorted({r["service_id"] for r in trips})
+    if len(service_ids) > 255:
+        raise ValueError(f"{len(service_ids)} service_ids exceeds the u8 serviceIndex field")
+    service_index = {sid: i for i, sid in enumerate(service_ids)}
+
     blob = BlobBuilder()
     records = []
     for r in sorted(trips, key=lambda r: int(r["trip_id"])):
@@ -352,15 +484,18 @@ def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
         direction_id = int(r["direction_id"]) if r["direction_id"] in ("0", "1") else 0
         records.append((
             int(r["trip_id"]),
-            struct.pack("<IB3xI", int(r["route_id"]), direction_id, headsign_off),
+            struct.pack("<IBB2xI", int(r["route_id"]), direction_id,
+                        service_index[r["service_id"]], headsign_off),
         ))
     write_indexed_table(SD_DATA_DIR / "trips.bin", records, blob.parts)
+
+    gen_schedule_binaries(zf, trips, service_index)
 
     readme = SD_DATA_DIR.parent / "README.md"
     readme.write_text(
         "# STA reference data for the SD card\n\n"
         "Generated by tools/gen_sta_tables.py -- copy this sta/ directory onto\n"
-        "the board's SD card (path /sta/{routes,stops,trips}.bin) to supplement\n"
+        "the board's SD card (path /sta/*.bin) to supplement\n"
         "the small always-available flash tables with STA's full static GTFS\n"
         "data: real per-trip headsigns and reliable direction grouping (trips.bin),\n"
         "plus stop lat/lon for future nearby-stop search (stops.bin). Optional --\n"

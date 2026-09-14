@@ -521,7 +521,7 @@ void test_offline_cached_board_shows_a_stale_marker() {
   BoardStatus status = makeSampleStatus();
   status.wifiOk = false;
   status.lastFetchFailed = true;
-  status.dataIsCached = true;
+  status.source = BoardStatus::DepartureSource::kCached;
   status.cachedAgeMin = 137;  // "Cached 2h ago"
   status.clockIsApproximate = true;
 
@@ -549,7 +549,7 @@ void test_cached_header_differs_from_a_live_one() {
     if (cached) {
       status.wifiOk = false;
       status.lastFetchFailed = true;
-      status.dataIsCached = true;
+      status.source = BoardStatus::DepartureSource::kCached;
       status.cachedAgeMin = 137;
     }
     engine.renderDepartureBoard(makeSampleBoard(), status);
@@ -592,7 +592,8 @@ void test_empty_board_messages_distinguish_the_offline_cases() {
     BoardStatus status = makeSampleStatus();
     status.wifiOk = wifiOk;
     status.lastFetchFailed = !wifiOk;
-    status.dataIsCached = cached;
+    status.source = cached ? BoardStatus::DepartureSource::kCached
+                          : BoardStatus::DepartureSource::kLive;
     engine.renderDepartureBoard({}, status);
     return target.pixels();
   };
@@ -618,7 +619,7 @@ void test_cached_board_with_unknown_age_is_marked_unknown_not_fresh() {
     BoardStatus status = makeSampleStatus();
     status.wifiOk = false;
     status.lastFetchFailed = true;
-    status.dataIsCached = true;
+    status.source = BoardStatus::DepartureSource::kCached;
     status.cachedAgeMin = cachedAgeMin;
     engine.renderDepartureBoard(makeSampleBoard(), status);
     return target.pixels();
@@ -641,7 +642,7 @@ void test_fetch_failure_with_wifi_up_is_not_labelled_offline() {
     BoardStatus status = makeSampleStatus();
     status.wifiOk = wifiOk;
     status.lastFetchFailed = true;
-    status.dataIsCached = true;
+    status.source = BoardStatus::DepartureSource::kCached;
     status.cachedAgeMin = 137;
     engine.renderDepartureBoard(makeSampleBoard(), status);
     return target.pixels();
@@ -649,6 +650,177 @@ void test_fetch_failure_with_wifi_up_is_not_labelled_offline() {
 
   TEST_ASSERT_TRUE_MESSAGE(render(true) != render(false),
                            "a fetch failure with Wi-Fi up must read differently from being offline");
+}
+
+// --- Scheduled times beside real-time, and the timetable source ---------
+
+// A real-time chip carries its scheduled time next to it, so a late bus
+// reads as late. This is the frame committed to docs/screenshots/.
+void test_realtime_chips_show_the_scheduled_time_for_comparison() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  std::vector<DirectionBoard> board;
+  DirectionBoard late;
+  late.globalRouteId = "1:31";
+  late.routeShortName = "31";
+  late.routeDisplayShortName = makeDisplayShortName("bus-31", "31");
+  late.routeColor = "111111";
+  late.routeTextColor = "FFFFFF";
+  {
+    // Running 4 minutes behind: due in 9, timetabled for 5 minutes ago.
+    DepartureRow row = makeDeparture("Downtown", kNow + 9 * 60, /*realTime=*/true);
+    row.scheduledDepartureTimeEpoch = kNow + 5 * 60;
+    late.departures.push_back(row);
+    // On time: the delta is omitted, only the scheduled clock shown.
+    DepartureRow onTime = makeDeparture("Downtown", kNow + 26 * 60, /*realTime=*/true);
+    onTime.scheduledDepartureTimeEpoch = kNow + 26 * 60;
+    late.departures.push_back(onTime);
+  }
+  board.push_back(late);
+
+  DirectionBoard early;
+  early.globalRouteId = "1:32";
+  early.routeShortName = "32";
+  early.routeDisplayShortName = makeDisplayShortName("bus-32", "32");
+  early.routeColor = "888888";
+  early.routeTextColor = "000000";
+  {
+    // Running 2 minutes early -- the case worth flagging hardest, since
+    // arriving "on time" means missing it.
+    DepartureRow row = makeDeparture("Shadle", kNow + 14 * 60, /*realTime=*/true);
+    row.scheduledDepartureTimeEpoch = kNow + 16 * 60;
+    early.departures.push_back(row);
+    // No real-time data at all: the time shown IS the schedule, so no
+    // annotation.
+    early.departures.push_back(makeDeparture("Shadle", kNow + 44 * 60));
+  }
+  board.push_back(early);
+
+  engine.renderDepartureBoard(board, makeSampleStatus());
+
+  TEST_ASSERT_EQUAL_INT(1, presenter.presentCount);
+  TEST_ASSERT_TRUE(target.hasVisibleContent(2));
+
+  const std::string path = snapshotPath("departure_board_scheduled_vs_realtime.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path),
+                           "failed to write departure_board_scheduled_vs_realtime.png");
+}
+
+// The annotation must actually reach the pixels, and a delay must look
+// different from an on-time arrival.
+void test_a_delayed_chip_renders_differently_from_an_on_time_one() {
+  auto render = [](int64_t scheduledOffsetMin) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+    std::vector<DirectionBoard> board;
+    DirectionBoard route;
+    route.globalRouteId = "1:31";
+    route.routeShortName = "31";
+    route.routeDisplayShortName = makeDisplayShortName("bus-31", "31");
+    route.routeColor = "111111";
+    route.routeTextColor = "FFFFFF";
+    DepartureRow row = makeDeparture("Downtown", kNow + 20 * 60, /*realTime=*/true);
+    row.scheduledDepartureTimeEpoch = kNow + scheduledOffsetMin * 60;
+    route.departures.push_back(row);
+    board.push_back(route);
+
+    engine.renderDepartureBoard(board, makeSampleStatus());
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(20) != render(14),
+                           "a bus running 6 minutes late must not render identically to an on-time one");
+  TEST_ASSERT_TRUE_MESSAGE(render(20) != render(23),
+                           "a bus running early must not render identically to an on-time one");
+}
+
+// A chip with no scheduled time at all (the source didn't supply one) is
+// left exactly as it was before this feature existed.
+void test_a_chip_without_a_scheduled_time_is_unannotated() {
+  auto render = [](bool withScheduled) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+    std::vector<DirectionBoard> board;
+    DirectionBoard route;
+    route.globalRouteId = "1:31";
+    route.routeShortName = "31";
+    route.routeDisplayShortName = makeDisplayShortName("bus-31", "31");
+    route.routeColor = "111111";
+    route.routeTextColor = "FFFFFF";
+    DepartureRow row = makeDeparture("Downtown", kNow + 20 * 60, /*realTime=*/true);
+    if (withScheduled) row.scheduledDepartureTimeEpoch = kNow + 20 * 60;
+    route.departures.push_back(row);
+    board.push_back(route);
+
+    engine.renderDepartureBoard(board, makeSampleStatus());
+    return target.pixels();
+  };
+
+  TEST_ASSERT_TRUE_MESSAGE(render(false) != render(true),
+                           "supplying a scheduled time should visibly annotate the chip");
+}
+
+// The static-timetable source is its own state, distinct from both live
+// and cached -- it is never stale the way a cache is, and never
+// authoritative the way live data is.
+void test_scheduled_source_is_marked_distinctly_from_live_and_cached() {
+  auto render = [](BoardStatus::DepartureSource source, bool expired) {
+    transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.wifiOk = false;
+    status.lastFetchFailed = true;
+    status.source = source;
+    status.cachedAgeMin = 137;
+    status.scheduleExpired = expired;
+    status.scheduleValidUntil = 20260919;
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+    return target.pixels();
+  };
+
+  const auto live = render(BoardStatus::DepartureSource::kLive, false);
+  const auto cached = render(BoardStatus::DepartureSource::kCached, false);
+  const auto scheduled = render(BoardStatus::DepartureSource::kScheduled, false);
+  const auto expired = render(BoardStatus::DepartureSource::kScheduled, true);
+
+  TEST_ASSERT_TRUE(live != cached);
+  TEST_ASSERT_TRUE(cached != scheduled);
+  TEST_ASSERT_TRUE(live != scheduled);
+  TEST_ASSERT_TRUE_MESSAGE(scheduled != expired,
+                           "an expired timetable must be called out, not shown as a normal one");
+}
+
+void test_scheduled_board_snapshot() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  BoardStatus status = makeSampleStatus();
+  status.wifiOk = false;
+  status.lastFetchFailed = true;
+  status.source = BoardStatus::DepartureSource::kScheduled;
+  engine.renderDepartureBoard(makeSampleBoard(), status);
+
+  TEST_ASSERT_TRUE(target.hasVisibleContent(2));
+  const std::string path = snapshotPath("departure_board_offline_timetable.png");
+  TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_offline_timetable.png");
 }
 
 void test_setup_prompt_snapshot_paints_a_nontrivial_frame() {
@@ -706,6 +878,11 @@ int main(int argc, char** argv) {
   RUN_TEST(test_empty_board_messages_distinguish_the_offline_cases);
   RUN_TEST(test_cached_board_with_unknown_age_is_marked_unknown_not_fresh);
   RUN_TEST(test_fetch_failure_with_wifi_up_is_not_labelled_offline);
+  RUN_TEST(test_realtime_chips_show_the_scheduled_time_for_comparison);
+  RUN_TEST(test_a_delayed_chip_renders_differently_from_an_on_time_one);
+  RUN_TEST(test_a_chip_without_a_scheduled_time_is_unannotated);
+  RUN_TEST(test_scheduled_source_is_marked_distinctly_from_live_and_cached);
+  RUN_TEST(test_scheduled_board_snapshot);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);
   RUN_TEST(test_setup_list_snapshot_paints_a_nontrivial_frame);
   return UNITY_END();

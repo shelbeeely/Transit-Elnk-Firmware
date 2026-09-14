@@ -100,6 +100,7 @@ DirectionBoard buildBoard(const Route& route, const MergedItinerary& mi,
     }
     row.stopName = mi.closestStop.stopName;
     row.departureTimeEpoch = item.departureTimeEpoch;
+    row.scheduledDepartureTimeEpoch = item.scheduledDepartureTimeEpoch;
     row.isRealTime = item.isRealTime;
     row.isLast = item.isLast;
     board.departures.push_back(std::move(row));

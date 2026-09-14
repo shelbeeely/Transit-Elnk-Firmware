@@ -41,7 +41,23 @@
 //   trips.bin  (16 bytes): tripId:u32, routeId:u32, directionId:u8 (the
 //     standard GTFS 0/1 from static trips.txt -- unlike the live GTFS-RT
 //     feed's own direction_id, see sta_feed_parser.h, this one is
-//     reliable) + 3 reserved/padding bytes, headsignOffset:u32
+//     reliable), serviceIndex:u8 (version 2+ only; reserved and zero in
+//     version 1) + 2 reserved bytes, headsignOffset:u32
+//
+// Three further tables carry the static timetable itself (version 2+).
+// They hold no strings at all -- every name a scheduled departure needs is
+// already in trips.bin or routes.bin and is reached by id -- so their blob
+// is empty:
+//   stop_times.bin     (12 bytes): stopCode:u32, tripId:u32, departureSec:u32.
+//     MANY records per key, sorted by (stopCode, departureSec), so a lookup
+//     is a lower-bound search to the stop followed by a forward scan in
+//     departure order. ~222,000 records / ~2.6MB for STA.
+//   calendar.bin       (16 bytes): serviceIndex:u32, daysMask:u8 + 3
+//     reserved, startDate:u32 (YYYYMMDD), endDate:u32
+//   calendar_dates.bin  (8 bytes): date:u32 (YYYYMMDD), serviceIndex:u8,
+//     exceptionType:u8 (1 = added, 2 = removed) + 2 reserved. Keyed on the
+//     date, also many-per-key, because the question asked once per wake is
+//     "what exceptions apply today".
 
 #include <cstddef>
 #include <cstdint>
@@ -76,6 +92,14 @@ struct TableHeader {
   uint32_t recordCount = 0;
   uint32_t recordSize = 0;
   uint32_t blobOffset = 0;
+  // 1 for a card written before the static timetable existed ("STA1"), 2
+  // for one carrying it ("STA2"). Both are readable; the difference is
+  // that trips.bin's serviceIndex byte was reserved (and therefore zero)
+  // in version 1, so a version-1 card must not be used for schedule
+  // lookups -- every trip would appear to belong to service index 0, which
+  // is a confidently wrong answer rather than an absent one. See
+  // sta_static_schedule.h.
+  uint32_t version = 0;
 };
 
 // Reads and validates the 16-byte header (magic "STA1" plus the three
@@ -94,6 +118,24 @@ bool readTableHeader(BinaryTableReader& reader, TableHeader& out);
 // to report" convention).
 bool findRecordByKey(BinaryTableReader& reader, const TableHeader& header, uint32_t key,
                      std::vector<uint8_t>& outRecord);
+
+// Index of the first record whose key is >= `key` (a lower bound), or
+// header.recordCount when every key is smaller. Unlike findRecordByKey()
+// above, this is for the tables that hold MANY records per key --
+// stop_times.bin (every departure at one stop) and calendar_dates.bin
+// (every service exception on one date). The caller scans forward from
+// here while the key still matches.
+//
+// Returns false only on a read failure; "no record has a key that large"
+// is a successful search that reports recordCount, not an error.
+bool findFirstRecordAtLeast(BinaryTableReader& reader, const TableHeader& header, uint32_t key,
+                            uint32_t& outIndex);
+
+// Reads record `index` whole (key included). False if index is out of
+// range or the read fails. Pairs with findFirstRecordAtLeast() for the
+// forward scan.
+bool readRecordAt(BinaryTableReader& reader, const TableHeader& header, uint32_t index,
+                  std::vector<uint8_t>& outRecord);
 
 // Reads the NUL-terminated string at blob-relative `offset`. `maxLen`
 // (including the terminator) is a defensive bound against a corrupt or
@@ -127,8 +169,50 @@ struct SdTripInfo {
   uint32_t tripId = 0;
   uint32_t routeId = 0;
   uint8_t directionId = 0;
+  // Which calendar.bin entry decides whether this trip runs on a given
+  // day. Meaningful only on a version-2 table -- see TableHeader::version.
+  uint8_t serviceIndex = 0;
   std::string headsign;
 };
+
+// One row of stop_times.bin: a scheduled departure of one trip at one stop.
+struct SdStopTime {
+  uint32_t stopCode = 0;
+  uint32_t tripId = 0;
+  // Seconds since the service day's GTFS reference (noon minus 12 hours --
+  // see local_time.h). Exceeds 86400 for trips that run past midnight;
+  // STA's feed reaches 25:10:00.
+  uint32_t departureSeconds = 0;
+};
+
+// One row of calendar.bin: which weekdays a service runs, and between
+// which dates.
+struct SdCalendarEntry {
+  uint32_t serviceIndex = 0;
+  // Bit N set = runs on weekday N, indexed by struct tm's tm_wday
+  // (bit 0 = Sunday), not by calendar.txt's Monday-first column order.
+  uint8_t daysMask = 0;
+  int32_t startDate = 0;  // YYYYMMDD, inclusive
+  int32_t endDate = 0;    // YYYYMMDD, inclusive
+};
+
+// One row of calendar_dates.bin: a service added to, or removed from, a
+// specific date. This is where holiday schedules live.
+struct SdCalendarException {
+  int32_t date = 0;  // YYYYMMDD
+  uint8_t serviceIndex = 0;
+  uint8_t exceptionType = 0;  // 1 = service added, 2 = service removed
+};
+
+// Record sizes, so callers can sanity-check a table is the one they think
+// it is before decoding records out of it.
+constexpr uint32_t kStopTimeRecordSize = 12;
+constexpr uint32_t kCalendarRecordSize = 16;
+constexpr uint32_t kCalendarDateRecordSize = 8;
+
+bool decodeStopTime(const uint8_t* record, SdStopTime& out);
+bool decodeCalendarEntry(const uint8_t* record, SdCalendarEntry& out);
+bool decodeCalendarException(const uint8_t* record, SdCalendarException& out);
 
 bool lookupSdRoute(BinaryTableReader& reader, uint32_t routeId, SdRouteInfo& out);
 bool lookupSdStop(BinaryTableReader& reader, uint32_t stopCode, SdStopInfo& out);

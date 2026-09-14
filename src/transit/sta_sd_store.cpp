@@ -33,6 +33,24 @@ void StaSdStore::begin() {
   routesReader_.open("/sta/routes.bin");
   stopsReader_.open("/sta/stops.bin");
   tripsReader_.open("/sta/trips.bin");
+  // Absent on a card generated before the static timetable existed; the
+  // three above still work there, and sta_static_schedule.h refuses the
+  // schedule rather than misreading it (see its header on version 1).
+  stopTimesReader_.open("/sta/stop_times.bin");
+  calendarReader_.open("/sta/calendar.bin");
+  calendarDatesReader_.open("/sta/calendar_dates.bin");
+}
+
+StaticScheduleTables StaSdStore::scheduleTables() {
+  StaticScheduleTables tables;
+  if (stopTimesReader_.isOpen()) tables.stopTimes = &stopTimesReader_;
+  if (tripsReader_.isOpen()) tables.trips = &tripsReader_;
+  if (routesReader_.isOpen()) tables.routes = &routesReader_;
+  if (calendarReader_.isOpen()) tables.calendar = &calendarReader_;
+  // A feed with no holiday exceptions legitimately has no such file, so a
+  // null here is normal rather than a problem.
+  if (calendarDatesReader_.isOpen()) tables.calendarDates = &calendarDatesReader_;
+  return tables;
 }
 
 bool StaSdStore::lookupRoute(uint32_t routeId, SdRouteInfo& out) {

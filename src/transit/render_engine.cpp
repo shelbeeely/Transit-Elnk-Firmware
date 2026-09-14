@@ -21,6 +21,7 @@
 
 #include "transit/render_engine.h"
 
+#include "transit/local_time.h"
 #include "transit/powered_by_transit_badge.h"
 
 #include <algorithm>
@@ -161,7 +162,30 @@ std::string formatDepartureChip(const DepartureRow& dep, int64_t nowEpoch) {
       text = std::to_string(minutes) + "m";
     }
   }
-  if (dep.isRealTime) text += " RT";
+  if (dep.isRealTime) {
+    text += " RT";
+    // The scheduled time, next to the live one, so a late bus reads as
+    // late rather than merely as "later than you expected". Only on
+    // real-time chips: on a scheduled-only chip the time shown IS the
+    // schedule, and repeating it would be noise.
+    //
+    // The delta is what's actually actionable, so it leads: "+4" for four
+    // minutes behind the timetable, "-1" for running early (which matters
+    // more -- an early bus is one you can miss by arriving on time). The
+    // scheduled clock time follows it, which is what makes the comparison
+    // checkable rather than something the reader has to take on trust.
+    if (dep.scheduledDepartureTimeEpoch > 0) {
+      const int64_t deltaMin = (dep.departureTimeEpoch - dep.scheduledDepartureTimeEpoch) / 60;
+      char scheduled[8];
+      formatClock(dep.scheduledDepartureTimeEpoch, scheduled, sizeof(scheduled));
+      if (deltaMin > 0) {
+        text += " +" + std::to_string(deltaMin);
+      } else if (deltaMin < 0) {
+        text += " " + std::to_string(deltaMin);
+      }
+      text += std::string(" sch ") + scheduled;
+    }
+  }
   return text;
 }
 
@@ -237,10 +261,11 @@ void drawStatusHeader(fui::DrawTarget& target, int16_t screenW, const BoardStatu
     // A fetch that failed with Wi-Fi up is a different problem -- a bad
     // key, a quota, a 5xx -- and saying "Offline" for it would throw away
     // the one diagnostic the header can give. The staleness itself is
-    // already carried by the "Cached 2h ago" line next to this either way.
+    // already carried by the freshness line next to this either way.
     const char* label;
     if (!status.wifiOk) {
-      label = status.dataIsCached ? "Offline" : "No Wi-Fi";
+      const bool haveFallbackData = status.source != BoardStatus::DepartureSource::kLive;
+      label = haveFallbackData ? "Offline" : "No Wi-Fi";
     } else {
       label = "Fetch failed";
     }
@@ -265,12 +290,25 @@ void drawStatusHeader(fui::DrawTarget& target, int16_t screenW, const BoardStatu
   // RTC-memory clock rather than a real SNTP sync, so an estimate is never
   // presented as the exact time.
   std::string updated;
-  if (status.dataIsCached) {
-    updated = std::string("Cached ") + formatCacheAge(status.cachedAgeMin);
-  } else {
-    char clock[8];
-    formatClock(status.lastUpdatedEpoch, clock, sizeof(clock));
-    updated = std::string("Updated ") + (status.clockIsApproximate ? "~" : "") + clock;
+  switch (status.source) {
+    case BoardStatus::DepartureSource::kCached:
+      updated = std::string("Cached ") + formatCacheAge(status.cachedAgeMin);
+      break;
+    case BoardStatus::DepartureSource::kScheduled:
+      // An expired timetable is a different problem from an old one, and
+      // the only one the reader can actually fix (regenerate the card), so
+      // it gets named with its date rather than a generic warning.
+      updated = status.scheduleExpired
+                    ? std::string("Timetable expired ") + formatYyyymmdd(status.scheduleValidUntil)
+                    : std::string("Timetable");
+      break;
+    case BoardStatus::DepartureSource::kLive:
+    default: {
+      char clock[8];
+      formatClock(status.lastUpdatedEpoch, clock, sizeof(clock));
+      updated = std::string("Updated ") + (status.clockIsApproximate ? "~" : "") + clock;
+      break;
+    }
   }
   fui::TextStyle updatedStyle;
   updatedStyle.align = fui::TextAlign::Right;
@@ -577,8 +615,12 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
     // from the reader: a cached board that has aged out entirely is not the
     // same situation as never having had data to cache.
     const char* message;
-    if (status.dataIsCached) {
-      // main.cpp sets dataIsCached whenever a cache was restored, even if
+    if (status.source == BoardStatus::DepartureSource::kScheduled) {
+      message = status.scheduleExpired
+                    ? "The timetable on the SD card has expired. Regenerate it from a current feed."
+                    : "Nothing else scheduled at this stop today.";
+    } else if (status.source == BoardStatus::DepartureSource::kCached) {
+      // main.cpp reports kCached whenever a cache was restored, even if
       // pruning then emptied it -- which is the only way this case can be
       // reached, and is what makes the distinction below meaningful.
       message = "Every cached departure has already left, and there's no network to refresh.";

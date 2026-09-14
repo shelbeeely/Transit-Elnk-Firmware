@@ -222,6 +222,9 @@ void ConfigStore::setTransferBufferMin(int minutes) { backend_.setInt("xfer_buf_
 bool ConfigStore::focusMode() { return backend_.getBool("focus_mode", false); }
 void ConfigStore::setFocusMode(bool enabled) { backend_.setBool("focus_mode", enabled); }
 
+std::string ConfigStore::timezone() { return backend_.getString("tz", kDefaultPosixTz); }
+void ConfigStore::setTimezone(const std::string& posixTz) { backend_.setString("tz", posixTz); }
+
 // Bus Wi-Fi captive-portal auto-login. All four keys are under the 15-char
 // NVS limit as written (docs/CONFIG_AND_STATE.md's note on that cap), so
 // unlike refresh_interval_min et al. none of them needed abbreviating.

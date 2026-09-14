@@ -9,9 +9,27 @@ the device.
 
 | Module | Covers |
 |---|---|
+| `include/transit/local_time.h` | Local time and GTFS service days (the foundation for all of it) |
 | `include/transit/time_keeper.h` | Approximate wall clock that survives deep sleep, in RTC memory |
 | `include/transit/offline_cache.h` | Last-known-good departure board, persisted in NVS |
+| `include/transit/sta_static_schedule.h` | STA's published timetable, read off the SD card |
 | `include/transit/captive_portal.h` | Detecting and signing in to an open network's portal |
+
+## Three kinds of departure, never confused for one another
+
+The board can show departures from three sources, and which one it's using
+is always on screen (`BoardStatus::DepartureSource`):
+
+| Source | Header reads | What it means |
+|---|---|---|
+| **Live** | `Updated 14:32` | Fetched this wake. Countdowns are current. |
+| **Cached** | `Cached 2h ago` + `Offline` | Restored from NVS after a failed fetch. Real departures, just not fresh. Ages out. |
+| **Timetable** | `Timetable` + `Offline` | Read from the SD card's static GTFS. What the schedule promises, with no knowledge of delays. Never stale, never authoritative. |
+
+They're tried in that order. A cache that still has entries beats the
+timetable, because cached rows carry real-time predictions the timetable
+can't know about; once it empties, the timetable takes over and keeps
+working indefinitely.
 
 ## What used to be lost offline
 
@@ -26,7 +44,49 @@ network produced:
 | "Leave now" urgency | Never triggered (needs a clock) | Triggers normally |
 | Preset trip lines | Absent | Restored from cache and re-formatted against the current clock |
 | Sleep-window math | Evaluated as if it were midnight (`minutesSinceLocalMidnight(0)` returns 0) | Evaluated against the approximate clock |
+| The whole day's schedule | Nothing | Read from the SD card, for as long as the feed is valid |
+| Local time | The firmware ran on **UTC** | Real local time with DST (`local_time.h`) |
 | Battery | Correct (local ADC read) | Unchanged |
+
+## 0. Local time, and why it had to come first (`local_time.h`)
+
+The firmware used to run entirely on UTC — `configTime(0, 0, ...)`, so
+`localtime_r()` returned UTC and "minutes since local midnight" was really
+minutes since UTC midnight. Survivable while the only consumer was the
+sleep window (a few hours of skew on when the board slows down overnight).
+Fatal to a timetable: GTFS times are local, so an 8-hour offset selects the
+wrong day's service and compares departures against the wrong "now".
+
+The fix is a POSIX TZ string plus `tzset()` — the standard ESP32/newlib
+mechanism — rather than hand-rolled DST arithmetic.
+`PST8PDT,M3.2.0,M11.1.0` (the default, and Spokane's rule) encodes the base
+offset, the DST offset and the exact transition instants in a form the C
+library already implements correctly, including the hour that doesn't exist
+in March and the one that happens twice in November.
+
+**One trap worth naming**, because it cost a bug during development: the
+Arduino-ESP32 core implements `configTime(0, 0, ...)` as
+`setenv("TZ","UTC0")` + `tzset()`. Calling it after setting the timezone
+silently reverts the board to UTC on every Wi-Fi wake. The firmware uses
+`configTzTime()` instead, which installs the rule and starts SNTP in one
+call so the two cannot disagree.
+
+### GTFS service days are not calendar days
+
+`stop_times.txt` measures a departure from **noon minus 12 hours** on the
+day the trip started — not from midnight. That wording is deliberate and it
+matters exactly twice a year: the spring-forward day is 23 hours long, so
+midnight plus a flat 20 hours lands at 21:00, an hour late, while noon
+minus 12 hours plus the same 20 hours lands at 20:00, which is what the
+printed timetable says. Consecutive references are always exactly 86,400
+seconds apart, and that invariant is what makes a flat offset mean the same
+wall-clock time year-round.
+
+The other consequence: a trip can be scheduled as `24:45:00`, meaning 00:45
+the following morning. STA's feed reaches `25:10:00`. So between midnight
+and 03:00 the board consults **two** service days — today's, and
+yesterday's with seconds past 86400 — because otherwise it would miss
+exactly the last bus of the night, which is when you most need it.
 
 ## 1. The approximate clock (`time_keeper.h`)
 
@@ -140,7 +200,110 @@ erase cycles, spread further by NVS's own wear levelling — not a concern at
 this cadence. It would become one at a refresh interval of a minute or two,
 which the free-tier API budget rules out anyway (see `DEPLOYMENT_OPS.md`).
 
-## 3. Bus Wi-Fi captive-portal sign-in (`captive_portal.h`)
+## 3. The static timetable (`sta_static_schedule.h`)
+
+The cache is a fallback measured in hours. This is the one that still works
+a week into a trip, on a cold boot, with a dead battery behind it.
+
+### What goes on the card
+
+`tools/gen_sta_tables.py` writes three more tables alongside the existing
+routes/stops/trips (run it against a current feed, then copy `sd_card_data/sta/`
+onto the card):
+
+| File | Size (STA) | Contents |
+|---|---|---|
+| `stop_times.bin` | ~2.6 MB | 222,598 rows: `stopCode`, `tripId`, `departureSec`, sorted by `(stopCode, departureSec)` |
+| `calendar.bin` | 400 B | 24 services: weekday mask + date range |
+| `calendar_dates.bin` | 3.4 KB | 432 date exceptions — this is where holidays live |
+
+`trips.bin` also gained a `serviceIndex` byte, in what had been reserved
+space. STA's `service_id` values are strings (`671.0.1`), so they're
+interned to indexes shared across the three files.
+
+A lookup is a lower-bound binary search to the stop's block (~18 seeks),
+then a binary search *within* that block for the first departure still to
+come. The median STA stop has 97 rows — one 512-byte sector. The busiest
+has 1,025.
+
+### The card format is versioned
+
+The magic went from `STA1` to `STA2`. An older card stays fully readable
+for routes/stops/trips, but the timetable is **refused** on it: that
+`serviceIndex` byte was reserved-and-zero in version 1, so every trip would
+appear to belong to service 0 — a confidently wrong answer, which is worse
+than an absent one.
+
+### Holidays and expiry
+
+`calendar_dates.bin` exceptions override the weekly pattern (type 1 adds a
+service to a date, type 2 removes it). Without it the board would show a
+full weekday timetable on Thanksgiving.
+
+A feed also has a validity window, and past it the schedule isn't merely
+stale — service has changed, so it's wrong. The board reads
+`calendar.bin`'s earliest start and latest end and says **"Timetable
+expired Sep 19, 2026"** rather than printing times for trips that no longer
+run. STA publishes roughly three service changes a year, so expect to
+regenerate the card about that often. (An *unknown* validity is not treated
+as expired — refusing to show a schedule because the window couldn't be
+read would turn a small problem into a blank board.)
+
+### On screen
+
+![The board running off the static timetable](screenshots/departure_board_offline_timetable.png)
+
+### Known limitations
+
+- **STA only.** The Transit API's four endpoints are all live queries with
+  no static feed to download, so a non-STA stop has the cache and nothing
+  more. This path keys off the `sta_stop` setting, which is already
+  separate from the Transit `stop_id`.
+- **Scheduled, never real-time.** No delays, no cancellations, no detours.
+- **Needs the SD card**, a version-2 card, and a clock. With no usable
+  clock there is no service day to look up.
+- **`stop_headsign` overrides are ignored** — the trip's headsign is used
+  even where a feed overrides it per stop. STA's feed does not appear to
+  rely on this.
+- **Display settings aren't applied.** Unlike the live path, scheduled rows
+  don't go through `ui_logic::buildDepartureBoard()`, so hidden routes, the
+  departure window and per-direction caps have no effect here. It's a
+  last-resort view; showing what the schedule says, grouped by route and
+  direction, is the whole job.
+
+## 4. Scheduled times beside real-time
+
+Separately from all of the above, and on **every** agency rather than just
+STA: a real-time chip now carries the scheduled time next to it, so a late
+bus reads as late rather than merely as "later than you expected".
+
+![Scheduled times shown next to real-time](screenshots/departure_board_scheduled_vs_realtime.png)
+
+```
+9m RT +4 sch 22:18     four minutes behind the timetable
+26m RT sch 22:39       on time (no delta shown)
+14m RT -2 sch 22:29    running two minutes EARLY
+44m                    no real-time data; the time shown IS the schedule
+```
+
+The delta leads because it's the actionable part. An early bus gets the
+same treatment as a late one and arguably matters more — it's the one you
+miss by arriving on time.
+
+This needed no new data: Transit API v4 has carried
+`scheduled_departure_time` all along (`docs/API_CONTRACT.md` even notes it
+as "useful if you ever want to show X min late"), and `models.cpp` was
+already parsing it into `ScheduleItem`. It was simply being dropped on the
+way to the render engine.
+
+**STA rows are deliberately exempt.** Its GTFS-RT feed carries a prediction
+and nothing to compare it against, so `scheduledDepartureTimeEpoch` is left
+at 0 there and no annotation is drawn. Copying the prediction into the
+scheduled field would make every STA bus report as exactly on time — a bus
+eight minutes late would read `12m RT sch 18:12`, stating something false
+rather than omitting something unknown.
+
+## 5. Bus Wi-Fi captive-portal sign-in (`captive_portal.h`)
 
 ### The problem
 
@@ -254,9 +417,17 @@ Only needed if automatic discovery doesn't work.
 
 ## Configuration
 
-All of it lives in the settings portal (a long power-button hold at boot on
-an already-provisioned board), as the fourth and final step after
-orientation, STA, and presets. Nothing here is part of first-run setup.
+The **time zone** is on the settings portal's first step, beside display
+orientation; the **bus Wi-Fi** fields are the fourth and final step, after
+orientation, STA and presets. Nothing here is part of first-run setup.
+
+The timetable itself has no setting — it's simply used when the card
+carries it and nothing fresher is available. Generate and copy it with:
+
+```sh
+python3 tools/gen_sta_tables.py <path-or-url-to-sta-gtfs.zip>
+cp -r sd_card_data/sta /media/<your-card>/
+```
 
 See `CONFIG_AND_STATE.md` for the NVS keys.
 

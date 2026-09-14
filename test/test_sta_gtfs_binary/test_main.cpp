@@ -15,7 +15,10 @@
 #include "transit/sta_gtfs_binary.h"
 
 using transit::sta::BinaryTableReader;
+using transit::sta::decodeStopTime;
+using transit::sta::findFirstRecordAtLeast;
 using transit::sta::findRecordByKey;
+using transit::sta::readRecordAt;
 using transit::sta::haversineMeters;
 using transit::sta::lookupSdRoute;
 using transit::sta::lookupSdStop;
@@ -82,7 +85,7 @@ class BlobBuilder {
 // strings those records' *Offset fields point into, in the same order the
 // caller computed those offsets against.
 std::vector<uint8_t> buildTable(const std::vector<std::pair<uint32_t, std::vector<uint8_t>>>& records,
-                                const std::vector<uint8_t>& blob) {
+                                const std::vector<uint8_t>& blob, char version = '1') {
   const uint32_t recordSize = 4 + (records.empty() ? 0 : static_cast<uint32_t>(records[0].second.size()));
   std::vector<uint8_t> body;
   for (const auto& [key, rest] : records) {
@@ -95,7 +98,7 @@ std::vector<uint8_t> buildTable(const std::vector<std::pair<uint32_t, std::vecto
   file.push_back('S');
   file.push_back('T');
   file.push_back('A');
-  file.push_back('1');
+  file.push_back(version);
   appendU32(file, static_cast<uint32_t>(records.size()));
   appendU32(file, recordSize);
   appendU32(file, blobOffset);
@@ -278,6 +281,120 @@ void test_empty_table_never_finds_anything() {
   TEST_ASSERT_FALSE(findRecordByKey(reader, header, 1, record));
 }
 
+// --- version reporting + the many-records-per-key primitives -------------
+
+// A version-1 card must stay fully readable: it predates the static
+// timetable but its routes/stops/trips are unchanged, and a firmware
+// update should never brick a card someone already wrote.
+void test_legacy_v1_tables_are_still_readable_and_reported_as_v1() {
+  BlobBuilder blob;
+  const uint32_t nameOffset = blob.append("32");
+  std::vector<uint8_t> rest;
+  appendU32(rest, nameOffset);
+  appendU32(rest, 0x1A7F37);
+  appendU32(rest, 0xFFFFFF);
+
+  InMemoryReader reader(buildTable({{671, rest}}, blob.bytes(), '1'));
+  TableHeader header;
+  TEST_ASSERT_TRUE(readTableHeader(reader, header));
+  TEST_ASSERT_EQUAL_UINT32(1, header.version);
+
+  SdRouteInfo route;
+  TEST_ASSERT_TRUE(lookupSdRoute(reader, 671, route));
+  TEST_ASSERT_EQUAL_STRING("32", route.shortName.c_str());
+}
+
+void test_v2_tables_report_version_two() {
+  BlobBuilder blob;
+  const uint32_t nameOffset = blob.append("32");
+  std::vector<uint8_t> rest;
+  appendU32(rest, nameOffset);
+  appendU32(rest, 0);
+  appendU32(rest, 0);
+
+  InMemoryReader reader(buildTable({{671, rest}}, blob.bytes(), '2'));
+  TableHeader header;
+  TEST_ASSERT_TRUE(readTableHeader(reader, header));
+  TEST_ASSERT_EQUAL_UINT32(2, header.version);
+}
+
+void test_unknown_magic_is_rejected() {
+  std::vector<uint8_t> file = buildTable({{1, {0, 0, 0, 0}}}, {}, '9');
+  InMemoryReader reader(file);
+  TableHeader header;
+  TEST_ASSERT_FALSE(readTableHeader(reader, header));
+}
+
+// trips.bin's serviceIndex lives in what was a reserved byte in version 1.
+void test_trip_service_index_decodes() {
+  BlobBuilder blob;
+  const uint32_t headsign = blob.append("Downtown");
+  std::vector<uint8_t> rest;
+  appendU32(rest, 671);        // routeId
+  rest.push_back(1);           // directionId
+  rest.push_back(7);           // serviceIndex
+  rest.push_back(0);           // reserved
+  rest.push_back(0);           // reserved
+  appendU32(rest, headsign);
+
+  InMemoryReader reader(buildTable({{9001, rest}}, blob.bytes(), '2'));
+  SdTripInfo trip;
+  TEST_ASSERT_TRUE(lookupSdTrip(reader, 9001, trip));
+  TEST_ASSERT_EQUAL_UINT32(671, trip.routeId);
+  TEST_ASSERT_EQUAL_UINT8(1, trip.directionId);
+  TEST_ASSERT_EQUAL_UINT8(7, trip.serviceIndex);
+  TEST_ASSERT_EQUAL_STRING("Downtown", trip.headsign.c_str());
+}
+
+// findFirstRecordAtLeast() is the primitive the stop_times lookup is built
+// on -- many records share a key, so an exact-match search is useless.
+void test_lower_bound_search_over_repeated_keys() {
+  auto stopTime = [](uint32_t tripId, uint32_t departure) {
+    std::vector<uint8_t> rest;
+    appendU32(rest, tripId);
+    appendU32(rest, departure);
+    return rest;
+  };
+  // Three stops; stop 200 has three departures.
+  InMemoryReader reader(buildTable(
+      {
+          {100, stopTime(1, 25000)},
+          {200, stopTime(2, 30000)},
+          {200, stopTime(3, 31000)},
+          {200, stopTime(4, 32000)},
+          {300, stopTime(5, 33000)},
+      },
+      {}, '2'));
+
+  TableHeader header;
+  TEST_ASSERT_TRUE(readTableHeader(reader, header));
+  TEST_ASSERT_EQUAL_UINT32(transit::sta::kStopTimeRecordSize, header.recordSize);
+
+  uint32_t index = 0;
+  TEST_ASSERT_TRUE(findFirstRecordAtLeast(reader, header, 200, index));
+  TEST_ASSERT_EQUAL_UINT32(1, index);  // first of stop 200's block
+  TEST_ASSERT_TRUE(findFirstRecordAtLeast(reader, header, 201, index));
+  TEST_ASSERT_EQUAL_UINT32(4, index);  // one past that block
+
+  // A key smaller than everything lands at 0; larger than everything lands
+  // at recordCount, which is a successful search reporting "none", not a
+  // failure.
+  TEST_ASSERT_TRUE(findFirstRecordAtLeast(reader, header, 1, index));
+  TEST_ASSERT_EQUAL_UINT32(0, index);
+  TEST_ASSERT_TRUE(findFirstRecordAtLeast(reader, header, 9999, index));
+  TEST_ASSERT_EQUAL_UINT32(5, index);
+
+  std::vector<uint8_t> record;
+  TEST_ASSERT_TRUE(readRecordAt(reader, header, 2, record));
+  transit::sta::SdStopTime decoded;
+  TEST_ASSERT_TRUE(decodeStopTime(record.data(), decoded));
+  TEST_ASSERT_EQUAL_UINT32(200, decoded.stopCode);
+  TEST_ASSERT_EQUAL_UINT32(3, decoded.tripId);
+  TEST_ASSERT_EQUAL_UINT32(31000, decoded.departureSeconds);
+
+  TEST_ASSERT_FALSE(readRecordAt(reader, header, 5, record));  // out of range
+}
+
 int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_reads_a_valid_header);
@@ -292,5 +409,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_haversine_distance_between_two_real_sta_stops);
   RUN_TEST(test_haversine_distance_to_the_same_point_is_zero);
   RUN_TEST(test_empty_table_never_finds_anything);
+  RUN_TEST(test_legacy_v1_tables_are_still_readable_and_reported_as_v1);
+  RUN_TEST(test_v2_tables_report_version_two);
+  RUN_TEST(test_unknown_magic_is_rejected);
+  RUN_TEST(test_trip_service_index_decodes);
+  RUN_TEST(test_lower_bound_search_over_repeated_keys);
   return UNITY_END();
 }

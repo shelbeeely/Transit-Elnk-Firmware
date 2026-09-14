@@ -28,11 +28,15 @@
 #include "transit/config_store.h"
 #include "transit/http_transport.h"
 #include "transit/icon_cache.h"
+#include "transit/local_time.h"
 #include "transit/offline_cache.h"
 #include "transit/power_scheduler.h"
 #include "transit/render_engine.h"
 #include "transit/setup_flow.h"
 #include "transit/sta_client.h"
+#include "transit/sta_models.h"
+#include "transit/sta_static_schedule.h"
+#include "transit/sta_stop_table.h"
 #include "transit/time_keeper.h"
 #include "transit/trip_planner.h"
 #include "transit/ui_logic.h"
@@ -98,8 +102,16 @@ bool connectOpenWifi(const std::string& ssid) {
 // No RTC on the X4 (docs/CONFIG_AND_STATE.md's plan; confirmed via
 // BoardConfig — FREEINK_CAP_RTC excludes XteinkX4), so time comes from SNTP
 // after Wi-Fi connect on every wake cycle. Returns 0 on sync failure/timeout.
-int64_t syncTimeAndGetEpoch() {
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+//
+// configTzTime(), not configTime(): the Arduino-ESP32 core implements
+// configTime(0, 0, ...) as setenv("TZ", "UTC0") + tzset(), which would
+// silently undo applyTimezone() on every single Wi-Fi wake and leave the
+// clock, the sleep window and the timetable lookup all running on UTC --
+// precisely the bug local_time.h exists to fix. configTzTime() installs
+// the POSIX rule and starts SNTP in one call, so the two can't disagree.
+int64_t syncTimeAndGetEpoch(const std::string& posixTz) {
+  const std::string tz = posixTz.empty() ? std::string(kDefaultPosixTz) : posixTz;
+  configTzTime(tz.c_str(), "pool.ntp.org", "time.nist.gov");
   time_t now = 0;
   for (int i = 0; i < 40 && now < 1700000000; ++i) {
     delay(250);
@@ -184,6 +196,61 @@ BoardStatus::PresetTripSummaryLine formatPresetSummaryLine(const PresetTripPlan&
   return line;
 }
 
+// --- Static timetable -> board rows (sta_static_schedule.h) ----------------
+
+// Groups scheduled departures into the same DirectionBoard shape
+// ui_logic::buildDepartureBoard() produces for live data, so the render
+// engine draws them through exactly one path.
+//
+// Deliberately NOT run through buildDepartureBoard() itself: that filters
+// against the user's display settings (departure window, hidden routes,
+// per-direction caps) using transit::Route data this doesn't have, and
+// re-deriving a Route from a scheduled departure just to throw most of it
+// away would be more code and more ways to be wrong. The timetable path is
+// a fallback of last resort; showing what the schedule says, grouped by
+// route and direction, is the whole job.
+//
+// isRealTime stays false throughout, which is the truthful answer: these
+// are timetable times, and the board marks the whole frame as such via
+// BoardStatus::kScheduled.
+std::vector<DirectionBoard> buildScheduledBoard(
+    const std::vector<sta::ScheduledDeparture>& scheduled) {
+  std::vector<DirectionBoard> board;
+  for (const sta::ScheduledDeparture& departure : scheduled) {
+    // Same (route, direction) grouping sta_models.h's staDeparturesToRoutes()
+    // uses, so a route running both ways doesn't collapse into one row.
+    const std::string routeId = "sta:" + std::to_string(departure.routeId);
+    DirectionBoard* row = nullptr;
+    for (DirectionBoard& candidate : board) {
+      if (candidate.globalRouteId == routeId &&
+          candidate.directionId == static_cast<int>(departure.directionId)) {
+        row = &candidate;
+        break;
+      }
+    }
+    if (row == nullptr) {
+      DirectionBoard fresh;
+      fresh.globalRouteId = routeId;
+      fresh.routeShortName = departure.routeShortName;
+      fresh.routeDisplayShortName.elements[1] = departure.routeShortName;
+      fresh.directionId = static_cast<int>(departure.directionId);
+      board.push_back(fresh);
+      row = &board.back();
+    }
+
+    DepartureRow item;
+    item.headsign = departure.headsign;
+    item.departureTimeEpoch = departure.departureEpoch;
+    // The timetable time IS the scheduled time, so both fields agree --
+    // which is exactly why formatDepartureChip() adds no comparison
+    // annotation here (it only annotates real-time chips).
+    item.scheduledDepartureTimeEpoch = departure.departureEpoch;
+    item.isRealTime = false;
+    row->departures.push_back(item);
+  }
+  return board;
+}
+
 // How long the power button must be held at boot to request the settings
 // portal (SetupFlow::runSettingsPortal()) instead of a normal wake cycle.
 // Long enough that the ordinary "press to wake" tap never triggers it.
@@ -228,6 +295,12 @@ void setup() {
   // blocks boot; STA still works via the flash-baked route/stop tables
   // regardless.
   g_staSdStore.begin();
+
+  // Before anything formats a time or computes a service day. Until this
+  // call the process is on UTC (configTime(0, 0, ...) below), which is
+  // merely a few hours of skew for the sleep window but is fatal to the
+  // static timetable -- see local_time.h.
+  applyTimezone(g_configStore.timezone());
 
   g_display.begin();
 
@@ -321,7 +394,7 @@ void setup() {
   std::vector<PresetTripPlan> presetPlans;
   bool anyFetchOk = false;
   if (wifiOk) {
-    nowEpoch = syncTimeAndGetEpoch();
+    nowEpoch = syncTimeAndGetEpoch(g_configStore.timezone());
     clockFromSntp = nowEpoch > 0;
 
     // Preset "Home"/"Work" trip planning (trip_planner.h) rides along on
@@ -460,7 +533,7 @@ void setup() {
       // cache out: "the cache aged out completely" and "there has never
       // been a cache" call for different things on screen, and the render
       // engine can only tell them apart from this flag.
-      status.dataIsCached = true;
+      status.source = BoardStatus::DepartureSource::kCached;
       // -1, not 0, when there's no clock: without one the age is genuinely
       // unknown, and reporting 0 would label a board of unknown vintage
       // "Cached just now". See BoardStatus::cachedAgeMin.
@@ -478,6 +551,42 @@ void setup() {
       pruneExpiredDepartures(restored, nowEpoch);
       board = restored.board;
       presetPlans = restored.presetPlans;
+    }
+
+    // Last resort, and the only one that still works a week into a trip:
+    // STA's published timetable, read straight off the SD card
+    // (sta_static_schedule.h). Preferred over nothing, but NOT over a
+    // cache that still has entries -- cached rows carry real-time
+    // predictions the timetable can't know about, so a recent cache is
+    // strictly better information while it lasts.
+    if (board.empty()) {
+      const std::string staStopCode = g_configStore.staStopCode();
+      const sta::StopInfo* staStop =
+          staStopCode.empty() ? nullptr : sta::parseStaStopCode(staStopCode);
+      if (staStop != nullptr && nowEpoch > 0) {
+        sta::StaticScheduleTables tables = g_staSdStore.scheduleTables();
+
+        // Read validity BEFORE looking for departures. An expired feed
+        // activates no services at all, so the lookup comes back empty --
+        // and reporting that as "nothing scheduled" would hide the one
+        // thing the reader can actually act on, which is that the card
+        // needs regenerating. The expiry has to be able to speak for
+        // itself even with an empty board behind it.
+        sta::FeedValidity validity;
+        if (tables.calendar != nullptr) validity = sta::readFeedValidity(*tables.calendar);
+        const bool expired = validity.known && !sta::feedCoversDate(validity, serviceDayFor(nowEpoch).date);
+
+        const std::vector<sta::ScheduledDeparture> scheduled = sta::nextScheduledDepartures(
+            tables, static_cast<uint32_t>(staStop->stopCode), serviceDayCandidates(nowEpoch),
+            std::max(g_configStore.maxDeparturesPerDirection(), 4) * 2);
+
+        if (!scheduled.empty() || expired) {
+          board = buildScheduledBoard(scheduled);
+          status.source = BoardStatus::DepartureSource::kScheduled;
+          status.scheduleValidUntil = validity.endDate;
+          status.scheduleExpired = expired;
+        }
+      }
     }
   }
 

@@ -30,6 +30,28 @@ StaDeparture makeDeparture(const std::string& routeId, const std::string& tripId
   return dep;
 }
 
+
+// STA's GTFS-RT feed carries a prediction and nothing to compare it
+// against -- the scheduled time lives only in the static feed. Copying the
+// prediction into scheduledDepartureTimeEpoch would make render_engine's
+// scheduled-vs-realtime annotation report every STA bus as exactly on
+// time, so a bus eight minutes late would read "12m RT sch 18:12": a
+// confident wrong claim rather than an absent one.
+void test_sta_rows_report_no_scheduled_time_rather_than_a_fake_one() {
+  const std::vector<StaDeparture> departures = {
+      makeDeparture("671", "1366637", "Downtown", 1'700'000'000)};
+
+  const std::vector<Route> routes = staDeparturesToRoutes(departures, "SCC Transit Center Bay 3");
+  TEST_ASSERT_EQUAL_size_t(1, routes.size());
+  TEST_ASSERT_EQUAL_size_t(1, routes[0].mergedItineraries.size());
+  TEST_ASSERT_EQUAL_size_t(1, routes[0].mergedItineraries[0].scheduleItems.size());
+
+  const transit::ScheduleItem& item = routes[0].mergedItineraries[0].scheduleItems[0];
+  TEST_ASSERT_TRUE(item.isRealTime);
+  TEST_ASSERT_EQUAL_INT64(1'700'000'000, item.departureTimeEpoch);
+  TEST_ASSERT_EQUAL_INT64(0, item.scheduledDepartureTimeEpoch);
+}
+
 }  // namespace
 
 void test_empty_input_yields_no_routes() {
@@ -114,5 +136,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_itinerary_and_schedule_item_are_linked_and_carry_the_destination);
   RUN_TEST(test_empty_destination_falls_back_to_route_label);
   RUN_TEST(test_output_flows_through_build_departure_board);
+  RUN_TEST(test_sta_rows_report_no_scheduled_time_rather_than_a_fake_one);
   return UNITY_END();
 }

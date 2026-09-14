@@ -64,23 +64,39 @@ struct BoardStatus {
   };
   std::vector<PresetTripSummaryLine> presetTrips;
 
-  // --- Offline / stale-data indicators ------------------------------------
+  // --- Where the rows below actually came from ----------------------------
   //
-  // True when the rows below were restored from the NVS cache
-  // (offline_cache.h) rather than fetched this wake -- the board is showing
-  // real departures, just not fresh ones, and saying so is the whole point
-  // of caching them instead of drawing an empty screen. cachedAgeMin is how
-  // old that data is in whole minutes, rendered in the header as "Cached 2h
-  // ago" in place of the usual "Updated 14:32".
+  // Three genuinely different kinds of information, which the board must
+  // never let pass for one another:
   //
-  // cachedAgeMin is -1 when the age is genuinely unknown -- the board
-  // restored a cache but has no clock to measure it against (offline long
-  // enough that time_keeper.h's estimate aged out, or a cold boot with no
-  // network). That renders as "Cached (age unknown)": reporting 0 there
-  // would label a board of unknown vintage as fresh, which is the one
-  // thing this whole treatment exists to prevent.
-  bool dataIsCached = false;
+  //   kLive      fetched this wake. Countdowns are current.
+  //   kCached    restored from NVS (offline_cache.h) after a failed fetch.
+  //              Real departures, just not fresh ones -- worth showing, but
+  //              only if the reader can tell they're old.
+  //   kScheduled read off the static timetable on the SD card
+  //              (sta_static_schedule.h). What the timetable promises, with
+  //              no knowledge of delays or cancellations. Never stale in
+  //              the way a cache is, and never authoritative the way live
+  //              data is.
+  enum class DepartureSource { kLive, kCached, kScheduled };
+  DepartureSource source = DepartureSource::kLive;
+
+  // How old the cached data is, in whole minutes. Only meaningful for
+  // kCached. -1 means the age is genuinely unknown -- a cache was restored
+  // but there's no clock to measure it against (offline long enough that
+  // time_keeper.h's estimate aged out, or a cold boot with no network).
+  // That renders as "Cached (age unknown)": reporting 0 there would label a
+  // board of unknown vintage as fresh, which is the one thing this whole
+  // treatment exists to prevent.
   int cachedAgeMin = 0;
+
+  // Set when the SD card's timetable has passed its own validity window
+  // (sta_static_schedule.h's FeedValidity). Past that date the schedule
+  // isn't merely stale, it's wrong -- service has changed -- so the board
+  // says so instead of printing times for trips that no longer run.
+  // scheduleValidUntil is YYYYMMDD, for naming the date in the warning.
+  bool scheduleExpired = false;
+  int32_t scheduleValidUntil = 0;
 
   // True when lastUpdatedEpoch came from time_keeper.h's approximate clock
   // (RTC memory carried across deep sleep) rather than a real SNTP sync.
