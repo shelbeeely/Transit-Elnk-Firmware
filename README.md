@@ -9,6 +9,10 @@ timer, fetches departures, draws the board, and deep-sleeps.
 Built on the [FreeInk SDK](https://github.com/Free-Ink/freeink-sdk)
 (vendored as a git submodule at `freeink-sdk/`) and PlatformIO/Arduino-ESP32.
 
+**[transit-elnk product site &rarr;](https://shelbeeely.github.io/Transit-Elnk-Firmware/)** — the
+features, the offline story, the full setup walkthrough, and every screenshot
+in one place.
+
 ## What it looks like
 
 Real rendered frames, not mockups: these come straight out of
@@ -135,6 +139,13 @@ tools/refresh_screenshots.sh          # regenerate docs/screenshots/*.png
 python3 tools/png_recompress.py docs/screenshots/*.png
 ```
 
+Board frames come from `test/test_render_snapshot` driving the real
+`RenderEngine`. The `portal_*` images are the setup and settings pages the
+firmware serves from its own access point, extracted verbatim from
+`setup_flow.cpp` and rendered in a headless browser
+(`tools/capture_portal_screenshots.py`, needs `pip install playwright`;
+skipped with a note if it isn't installed).
+
 A plain `pio test -e native` writes these frames to the gitignored
 `.pio/test-output/render_snapshot/`, so running the test suite never dirties
 the working tree; the script redirects them into the tracked directory
@@ -151,7 +162,8 @@ layout change so the images above match what the firmware actually draws.
 | `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), preset "Home"/"Work" trip-transfer planning (`trip_planner` — see `docs/TRIP_PLANNER.md`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`), offline support (`local_time` timezone/GTFS service days, `time_keeper` RTC-memory clock, `offline_cache` last-known-good board, `sta_static_schedule` SD-card timetable, `captive_portal` open-network sign-in — see `docs/OFFLINE_AND_BUS_WIFI.md`) |
 | `test/` | Host-side Unity tests for the hardware-independent modules (`pio test -e native`) |
 | `tools/gen_sta_tables.py` | Regenerates the baked-in STA route/stop tables, and the SD card's full static GTFS including the timetable, from a fresh feed |
-| `tools/refresh_screenshots.sh`, `tools/png_recompress.py` | Regenerate and shrink the rendered PNGs under `docs/screenshots/` |
+| `tools/refresh_screenshots.sh`, `tools/png_recompress.py`, `tools/capture_portal_screenshots.py` | Regenerate and shrink every screenshot under `docs/screenshots/` — board frames from the render engine, portal pages from a headless browser |
+| `site/`, `tools/build_site.sh` | The GitHub Pages product site (`.github/workflows/pages.yml` deploys it) |
 | `freeink-sdk/` | Vendored SDK submodule — display driver, UI framework, board config, power management, etc. |
 | `docs/` | Design spec this firmware is built against (see table below) |
 

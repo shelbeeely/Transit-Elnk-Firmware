@@ -23,6 +23,18 @@ cd "$(dirname "$0")/.."
 
 SNAPSHOT_OUT_DIR="docs/screenshots" pio test -e native -f test_render_snapshot
 
+# The setup and settings portals are HTML the firmware serves from its own
+# access point, not e-ink frames -- so they come from a headless browser
+# driving the real page markup, extracted verbatim from setup_flow.cpp.
+# Skipped rather than fatal when Playwright isn't installed: the board
+# screenshots above are the ones most changes affect.
+if python3 -c "import playwright" 2>/dev/null; then
+  python3 tools/capture_portal_screenshots.py docs/screenshots
+else
+  echo "note: playwright not installed, skipping portal screenshots"
+  echo "      pip install playwright   # then re-run to refresh those too"
+fi
+
 # The host PNG writer emits uncompressed deflate to avoid a zlib dependency
 # (test/test_render_snapshot/png_writer.h), which is ~384 KB a frame. Shrink
 # them losslessly before they reach a commit -- skipping this step is how

@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transit-Elnk-Firmware — an e-ink departure board that works offline</title>
+<meta name="description" content="ESP32 firmware for a battery-powered 800x480 e-ink transit departure board. Live departures, Home/Work transfer planning, and a full static timetable that keeps working with no network at all.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2316150f'/><rect x='7' y='9' width='18' height='4' rx='1' fill='%23faf9f7'/><rect x='7' y='16' width='11' height='4' rx='1' fill='%23faf9f7'/><rect x='7' y='23' width='14' height='2' rx='1' fill='%238a857a'/></svg>">
+<meta property="og:title" content="Transit-Elnk-Firmware">
+<meta property="og:description" content="An e-ink transit departure board that keeps working when the network doesn't.">
+<meta property="og:type" content="website">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="./">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+      Transit-Elnk
+    </a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#offline">Offline</a>
+      <a href="#setup">Setup</a>
+      <a href="#specs">Specs</a>
+      <a href="gallery.html">Gallery</a>
+      <a href="#build">Build it</a>
+      <a class="cta" href="https://github.com/shelbeeely/Transit-Elnk-Firmware">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+
+<!-- ============================ HERO ============================ -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow">ESP32 · E-ink · Battery</span>
+      <h1>The departure board that doesn't stop at the edge of&nbsp;Wi&#8209;Fi.</h1>
+      <p class="lede">
+        Firmware for a battery-powered 800&times;480 e-ink panel that shows when your
+        bus actually leaves. It wakes on a timer, fetches, draws, and sleeps — and
+        when the network is gone it falls back to cached data, then to the published
+        timetable read straight off an SD card.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/shelbeeely/Transit-Elnk-Firmware">View the source</a>
+        <a class="btn" href="#build">Build it yourself</a>
+      </div>
+    </div>
+    <div class="row-media">
+      <div class="panel">
+        <img src="screenshots/departure_board.png" width="800" height="480"
+             alt="The departure board: stop name and clock in the header, three route rows with countdown chips, and a Powered by Transit badge in the footer.">
+      </div>
+      <p class="panel-caption">Every screenshot on this page is a real frame from the renderer, not a mockup.</p>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ============================ FEATURES ============================ -->
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">What it does</p>
+      <h2>Built around one question: can I still catch it?</h2>
+      <p>
+        Everything here exists because a board that only shows raw times makes you do
+        the arithmetic yourself — usually while walking, usually late.
+      </p>
+    </div>
+
+    <div class="features">
+      <article class="card">
+        <span class="tag">Departures</span>
+        <h3>Live countdowns</h3>
+        <p>Minutes-until rather than clock times, with a real-time badge on predictions that came from the vehicle rather than the timetable.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Comparison</span>
+        <h3>Scheduled beside real time</h3>
+        <p>A live chip carries what the timetable promised, so <code>9m RT +4 sch 22:18</code> reads as four minutes late instead of just "later than you thought".</p>
+      </article>
+      <article class="card">
+        <span class="tag">Planning</span>
+        <h3>Home &amp; Work trips</h3>
+        <p>Save a fixed route chain with transfers. The board computes a leave-by time and tells you where and when to change buses.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Attention</span>
+        <h3>Leave-now urgency</h3>
+        <p>Departures five minutes out or closer get bold type and an outline — a glanceable cue rather than a number you have to parse.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Attention</span>
+        <h3>Focus mode</h3>
+        <p>Reduces the whole board to the one or two soonest departures, drawn large. Less to filter out when filtering is the hard part.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Sources</span>
+        <h3>Two agencies at once</h3>
+        <p>Transit API v4 for the main stop, plus optional Spokane Transit real-time arrivals shown alongside — not merged, so you can tell them apart.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Display</span>
+        <h3>Portrait or landscape</h3>
+        <p>The panel's native 800&times;480, or rotated to 480&times;800. Layout reflows; nothing is cropped.</p>
+      </article>
+      <article class="card">
+        <span class="tag">Power</span>
+        <h3>Wake, draw, sleep</h3>
+        <p>No always-on radio and no always-on screen. E-ink holds the last frame with the panel powered down entirely.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SHOWCASE ============================ -->
+<section class="alt">
+  <div class="wrap showcase">
+
+    <div class="row">
+      <div>
+        <p class="kicker">Scheduled vs. real time</p>
+        <h3>See the delay, not just the time</h3>
+        <p>
+          Transit's API has always sent a scheduled departure time alongside the
+          live prediction. The board now shows both, leading with the delta because
+          that's the part you act on.
+        </p>
+        <p>
+          A bus running <em>early</em> gets the same treatment as a late one, and
+          arguably matters more — it's the one you miss by arriving on time.
+        </p>
+        <div class="note">
+          <p><strong>Where it stays quiet:</strong> a departure with no real-time
+          data shows no annotation, because the time on screen already <em>is</em>
+          the schedule. Spokane Transit rows are exempt too — its feed carries a
+          prediction with nothing to compare against, and claiming "on time" would
+          be stating something false rather than omitting something unknown.</p>
+        </div>
+      </div>
+      <div class="row-media">
+        <div class="panel">
+          <img src="screenshots/departure_board_scheduled_vs_realtime.png" width="800" height="480" loading="lazy"
+               alt="Departure chips reading 9m RT +4 sch 22:18, 26m RT sch 22:39, and 14m RT -2 sch 22:29, with an unannotated 44m chip.">
+        </div>
+      </div>
+    </div>
+
+    <div class="row flip">
+      <div>
+        <p class="kicker">Preset trips</p>
+        <h3>&ldquo;Leave by 5:42, change at Division&rdquo;</h3>
+        <p>
+          Configure the route chain you already know — bus 31, transfer to 32 — and
+          the board resolves it against live departures every wake: when to leave,
+          where to get off, and roughly when the connection goes.
+        </p>
+        <p>
+          It's deliberately not a general trip planner. You supply the route you
+          actually take; the firmware answers the timing question against data it is
+          already fetching, at <strong>zero extra API calls</strong>.
+        </p>
+      </div>
+      <div class="row-media">
+        <div class="panel">
+          <img src="screenshots/departure_board_with_presets.png" width="800" height="480" loading="lazy"
+               alt="Departure board with a Home and Work strip above the footer, showing a leave-by time and transfer points.">
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <p class="kicker">Focus mode</p>
+        <h3>One thing, large</h3>
+        <p>
+          A toggle that drops everything except the next departure or two. Built for
+          time-blindness: when the board is a wall of numbers, the useful one is
+          harder to find than it should be.
+        </p>
+      </div>
+      <div class="row-media">
+        <div class="panel">
+          <img src="screenshots/departure_board_focus_mode.png" width="800" height="480" loading="lazy"
+               alt="Focus mode: two large centred rows, each a route and headsign above a big countdown.">
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================ OFFLINE ============================ -->
+<section id="offline">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Offline</p>
+      <h2>Three sources, never confused for one another</h2>
+      <p>
+        Carry the board onto a bus and it leaves the network it was set up on. Rather
+        than going blank, it steps down through what it still knows — and always says
+        which of the three it is showing.
+      </p>
+    </div>
+
+    <div class="sources">
+      <div>
+        <span class="source-label s-live"><span class="dot"></span> Live</span>
+        <div class="shot">
+          <img src="screenshots/departure_board.png" width="800" height="480" loading="lazy"
+               alt="Live board with the header reading Updated 22:13.">
+        </div>
+        <p style="margin-top:.9rem">Fetched this wake. The header reads <code>Updated 22:13</code> and countdowns are current.</p>
+      </div>
+      <div>
+        <span class="source-label s-cached"><span class="dot"></span> Cached</span>
+        <div class="shot">
+          <img src="screenshots/departure_board_offline_cached.png" width="800" height="480" loading="lazy"
+               alt="Cached board with the header reading Cached 2h ago and Offline.">
+        </div>
+        <p style="margin-top:.9rem">The last good fetch, restored from flash and marked <code>Cached 2h ago</code>. Departures that have already left are pruned out, so it empties rather than lying.</p>
+      </div>
+      <div>
+        <span class="source-label s-sched"><span class="dot"></span> Timetable</span>
+        <div class="shot">
+          <img src="screenshots/departure_board_offline_timetable.png" width="800" height="480" loading="lazy"
+               alt="Board reading Timetable and Offline, showing scheduled departures.">
+        </div>
+        <p style="margin-top:.9rem">The published schedule off the SD card. No delays, no cancellations — and no expiry either. This one keeps working a week into a trip.</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><b>222,598</b><span>timetable rows on the card</span></div>
+      <div class="stat"><b>2.6&nbsp;MB</b><span>for a whole agency's schedule</span></div>
+      <div class="stat"><b>~1&nbsp;KB</b><span>read for a typical stop lookup</span></div>
+      <div class="stat"><b>~24 h</b><span>the clock survives with no sync</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap showcase">
+    <div class="row">
+      <div>
+        <p class="kicker">The clock problem</p>
+        <h3>No RTC chip, so it borrows one</h3>
+        <p>
+          The panel has no battery-backed clock. Time normally comes from the network
+          each wake — which is exactly what you don't have offline, and without a
+          clock there are no countdowns at all.
+        </p>
+        <p>
+          So before sleeping the firmware records the time and the sleep length into
+          ESP32 RTC memory, which survives deep sleep, and adds them back on waking.
+        </p>
+        <div class="note">
+          <p><strong>It stops before it lies.</strong> The sleep timer runs off an
+          internal RC oscillator that isn't disciplined during sleep, so error
+          accumulates. The firmware budgets a deliberately conservative bound, marks
+          an estimated clock with a leading <code>~</code>, and once the bound passes
+          15 minutes it goes back to reporting the time as unknown rather than
+          showing a confident guess.</p>
+        </div>
+      </div>
+      <div class="row-media">
+        <div class="panel">
+          <img src="screenshots/departure_board_cached_unknown_age.png" width="800" height="480" loading="lazy"
+               alt="Board reading Cached (age unknown) and Offline, with no clock available.">
+        </div>
+        <p class="panel-caption">Offline long enough that the clock aged out: the cache is still drawn, but its age is reported as unknown rather than as fresh.</p>
+      </div>
+    </div>
+
+    <div class="row flip">
+      <div>
+        <p class="kicker">Expiry</p>
+        <h3>A stale timetable says so</h3>
+        <p>
+          Transit agencies change service a few times a year, and past a feed's own
+          validity window the schedule isn't merely old — it's wrong. The board reads
+          that window off the card and names the date instead of printing times for
+          trips that no longer run.
+        </p>
+        <p>Holiday exceptions are applied too, so a Thanksgiving Thursday shows the
+        Sunday timetable rather than a full weekday one.</p>
+      </div>
+      <div class="row-media">
+        <div class="panel">
+          <img src="screenshots/departure_board_timetable_expired.png" width="800" height="480" loading="lazy"
+               alt="Board reading Timetable expired Sep 19, 2026 with an instruction to regenerate the card.">
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <p class="kicker">Bus Wi-Fi</p>
+        <h3>Signs itself in, then checks that it worked</h3>
+        <p>
+          Name an open network and an email or phone, and the board will associate to
+          it, detect a captive portal with the same canary probes a phone uses, read
+          the sign-in form off the page, and submit it.
+        </p>
+        <p>
+          It then re-probes, because portals return a cheerful <code>200 OK</code> for
+          rejected logins as readily as accepted ones. Only a clean canary counts as
+          online.
+        </p>
+        <div class="note">
+          <p><strong>Scope, honestly:</strong> this handles the
+          &ldquo;type your email, press Connect&rdquo; shape. A portal that builds its
+          form in JavaScript needs two values captured by hand, and one wanting a real
+          username and password is out of scope. The board never joins an open network
+          you haven't named.</p>
+        </div>
+      </div>
+      <div class="row-media">
+        <div class="shot">
+          <img src="screenshots/portal_settings_buswifi.png" width="840" height="1180" loading="lazy"
+               alt="The settings portal's bus Wi-Fi step, with fields for network name, email or phone, and two advanced override fields.">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SETUP ============================ -->
+<section id="setup">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Setup</p>
+      <h2>No touchscreen, no keyboard, no app</h2>
+      <p>
+        On first boot the board hosts its own Wi-Fi access point and serves a setup
+        page. Join it from a phone, the page opens itself, and each step is saved as
+        soon as it's confirmed — so an interrupted setup resumes instead of starting over.
+      </p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <span class="step-n">1</span>
+        <h3>Pick a network</h3>
+        <p>The board scans and lists what it can see, or you type an SSID directly.</p>
+        <div class="shot"><img src="screenshots/portal_setup_wifi.png" width="840" height="1006" loading="lazy" alt="Setup step 1: Wi-Fi network list, SSID and password fields."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">2</span>
+        <h3>Add an API key</h3>
+        <p>Validated with a single live call, so a bad key fails here rather than as a blank board later.</p>
+        <div class="shot"><img src="screenshots/portal_setup_apikey.png" width="840" height="384" loading="lazy" alt="Setup step 2: Transit API key entry field."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">3</span>
+        <h3>Find your stop</h3>
+        <p>Search by approximate coordinates and part of a name; pick from real results.</p>
+        <div class="shot"><img src="screenshots/portal_setup_stop.png" width="840" height="998" loading="lazy" alt="Setup step 3: stop search with three matching Spokane stops listed."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">4</span>
+        <h3>Done</h3>
+        <p>The board draws its first frame and drops into its normal wake cycle.</p>
+        <div class="shot"><img src="screenshots/portal_setup_done.png" width="840" height="220" loading="lazy" alt="Setup complete confirmation screen."></div>
+      </div>
+    </div>
+
+    <div class="section-head" style="margin-top:3.5rem">
+      <h3>Settings, later</h3>
+      <p>A long press of the power button at boot reopens the same portal with the
+      options that aren't part of first-run setup.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <span class="step-n">A</span>
+        <h4>Display &amp; time zone</h4>
+        <p>Orientation, and the POSIX time zone that decides which day's timetable to read.</p>
+        <div class="shot"><img src="screenshots/portal_settings_display.png" width="840" height="628" loading="lazy" alt="Settings: display orientation dropdown and time zone field."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">B</span>
+        <h4>Spokane Transit</h4>
+        <p>Optional second data source, keyed by the number printed on the stop sign.</p>
+        <div class="shot"><img src="screenshots/portal_settings_sta.png" width="840" height="422" loading="lazy" alt="Settings: STA stop number entry."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">C</span>
+        <h4>Home &amp; Work</h4>
+        <p>Build each leg: route, boarding stop, direction, transfer stop. Directions are confirmed against live data.</p>
+        <div class="shot"><img src="screenshots/portal_settings_presets.png" width="840" height="1730" loading="lazy" alt="Settings: preset trip editor with one configured leg and a direction picker."></div>
+      </div>
+      <div class="step">
+        <span class="step-n">D</span>
+        <h4>Bus Wi-Fi</h4>
+        <p>The open network to fall back on, and what to hand its sign-in page.</p>
+        <div class="shot"><img src="screenshots/portal_settings_buswifi.png" width="840" height="1180" loading="lazy" alt="Settings: bus Wi-Fi sign-in configuration."></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ SPECS ============================ -->
+<section id="specs" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Specifications</p>
+      <h2>What it runs on</h2>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <tbody>
+          <tr><td>Board</td><th>Xteink X4 — ESP32-C3, SSD1677 controller</th></tr>
+          <tr><td>Display</td><th>800&times;480 e-ink, 4-level greyscale</th></tr>
+          <tr><td>Orientation</td><th>Landscape (native) or portrait, switchable at runtime</th></tr>
+          <tr><td>Storage</td><th>NVS for settings and the offline cache; optional SD card for full static GTFS</th></tr>
+          <tr><td>Time</td><th>SNTP when online; RTC-memory estimate offline. No RTC chip on this board.</th></tr>
+          <tr><td>Input</td><th>Power button only — no touch, no keyboard. Setup runs over a captive portal.</th></tr>
+          <tr><td>Data</td><th>Transit API v4; optional Spokane Transit GTFS-RT and static GTFS</th></tr>
+          <tr><td>Refresh</td><th>60 minutes by default, treated as a floor, with an optional overnight sleep window</th></tr>
+          <tr><td>API budget</td><th>One call per wake — about 720 a month at the default, against a 1,500/month free tier</th></tr>
+          <tr><td>Toolchain</td><th>PlatformIO / Arduino-ESP32, built on the FreeInk SDK</th></tr>
+          <tr><td>Tests</td><th>231 host-side tests, plus a real cross-compile, on every push</th></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p><strong>No battery-life figure here on purpose.</strong> Nobody has measured
+      one on real hardware yet. The design is wake-fetch-draw-sleep with the panel and
+      peripheral rails powered down between refreshes, but an unmeasured number
+      dressed up as a spec would be a guess.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ LIMITS ============================ -->
+<section id="limits">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Before you build one</p>
+      <h2>What it doesn't do</h2>
+      <p>Every project has these. Here they are up front rather than in an issue tracker.</p>
+    </div>
+
+    <div class="limits">
+      <div class="limit">
+        <h3>The offline timetable is Spokane-only</h3>
+        <p>Transit's API has no static feed to download, so a non-STA stop has the cache and nothing beyond it. The mechanism is general; the data isn't.</p>
+      </div>
+      <div class="limit">
+        <h3>You need your own API key</h3>
+        <p>Transit reviews access requests by hand, and there's no published turnaround. Start that before you order hardware.</p>
+      </div>
+      <div class="limit">
+        <h3>TLS certificates aren't pinned</h3>
+        <p>HTTPS connections currently skip verification. Fine on a home network, worth fixing before leaning on the bus Wi-Fi feature.</p>
+      </div>
+      <div class="limit">
+        <h3>Timetable cards need regenerating</h3>
+        <p>Roughly three times a year, when the agency changes service. The board tells you when, but you still have to do it.</p>
+      </div>
+      <div class="limit">
+        <h3>Captive portals only go so far</h3>
+        <p>Email-or-phone sign-in works. Real usernames and passwords, vouchers and JavaScript-built forms don't.</p>
+      </div>
+      <div class="limit">
+        <h3>No hardware has run this yet</h3>
+        <p>It cross-compiles in CI and 231 host tests pass, but the panel-facing paths — SD, deep sleep, battery ADC — haven't been exercised on a physical board.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ BUILD ============================ -->
+<section id="build" class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Getting started</p>
+      <h2>Build it</h2>
+      <p>Two commands, once PlatformIO is installed. The host test suite needs no ESP32 toolchain at all.</p>
+    </div>
+
+    <pre><code><span class="cmt"># clone, with the FreeInk SDK submodule</span>
+<span class="prompt">$</span> git clone --recursive https://github.com/shelbeeely/Transit-Elnk-Firmware
+<span class="prompt">$</span> cd Transit-Elnk-Firmware
+<span class="prompt">$</span> pip install -U platformio
+
+<span class="cmt"># host-side tests — no hardware, no toolchain download</span>
+<span class="prompt">$</span> pio test -e native
+
+<span class="cmt"># the real firmware (downloads an ESP32 toolchain the first time)</span>
+<span class="prompt">$</span> pio run -e xteink_x4</code></pre>
+
+    <h3 style="margin-top:2.5rem">Optional: the offline timetable</h3>
+    <p>Generate the SD card's static GTFS from a current feed, then copy it across.</p>
+    <pre><code><span class="prompt">$</span> python3 tools/gen_sta_tables.py &lt;path-or-url-to-gtfs.zip&gt;
+<span class="prompt">$</span> cp -r sd_card_data/sta /media/&lt;your-card&gt;/</code></pre>
+
+    <h3 style="margin-top:2.5rem">Documentation</h3>
+    <p>The reference docs are the spec the firmware is built against, not notes written after the fact.</p>
+    <ul>
+      <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/OFFLINE_AND_BUS_WIFI.md">Offline behaviour &amp; bus Wi-Fi</a> — local time, the RTC clock and its real accuracy, the cache, the timetable format, captive portals</li>
+      <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/TRIP_PLANNER.md">Trip planner</a> — how a preset chain is resolved, and what it approximates</li>
+      <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/STA_INTEGRATION.md">Spokane Transit integration</a> — the second data source and its compliance notes</li>
+      <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/API_CONTRACT.md">API contract</a> · <a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/DATA_MODEL.md">Data model</a> · <a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/UI_BEHAVIOR.md">UI behaviour</a> · <a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/docs/CONFIG_AND_STATE.md">Config &amp; state</a></li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware">Source on GitHub</a></li>
+          <li><a href="gallery.html">Screenshot gallery</a></li>
+          <li><a href="https://github.com/shelbeeely/Transit-Elnk-Firmware/issues">Issues</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Built on</h4>
+        <ul>
+          <li><a href="https://github.com/Free-Ink/freeink-sdk">FreeInk SDK</a></li>
+          <li><a href="https://platformio.org/">PlatformIO</a></li>
+          <li><a href="https://github.com/bblanchon/ArduinoJson">ArduinoJson</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Data</h4>
+        <ul>
+          <li><a href="https://transitapp.com/apis">Transit API</a></li>
+          <li><a href="https://www.spokanetransit.com/">Spokane Transit Authority</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="colophon">
+      <p>
+        Departure data is powered by <a href="https://transitapp.com/">Transit</a>;
+        the board displays the required attribution on its main screen. Spokane
+        Transit data is used under the terms of its published GTFS feeds. This is an
+        independent hobby project and is not affiliated with, endorsed by, or
+        supported by Transit, Spokane Transit Authority, or Xteink.
+      </p>
+      <p>
+        Screenshots are generated from the firmware itself — board frames through the
+        real renderer, portal pages through a headless browser driving the exact HTML
+        the device serves.
+      </p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

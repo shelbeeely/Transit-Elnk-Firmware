@@ -266,6 +266,11 @@ section{display:none;margin-bottom:1.5em}
 section.active{display:block}
 label{display:block;margin:.8em 0 .2em}
 input,select{width:100%;box-sizing:border-box;padding:.5em;font-size:1em}
+/* Radios and checkboxes are inputs too, and the 100% above stretches them
+   across the page with their label stranded underneath -- which is exactly
+   how the direction picker rendered before this rule. */
+input[type=radio],input[type=checkbox]{width:auto;margin:0 .5em 0 0;vertical-align:middle}
+label.inline{display:inline-block;margin:.35em 1.2em .35em 0}
 button{margin-top:1em;padding:.6em 1.2em;font-size:1em;margin-right:.5em}
 button.small{padding:.3em .7em;font-size:.9em;margin-top:.4em}
 ul{list-style:none;padding:0}
@@ -496,6 +501,7 @@ function renderLegs(preset){
       var dirWrap = document.createElement('div');
       leg.directions.forEach(function(d){
         var label = document.createElement('label');
+        label.className = 'inline';
         var radio = document.createElement('input');
         radio.type='radio'; radio.name='dir-'+preset+'-'+idx; radio.checked = leg.directionId===d.directionId;
         radio.onclick = function(){ leg.directionId=d.directionId; };

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screenshot gallery — Transit-Elnk-Firmware</title>
+<meta name="description" content="Every state the e-ink departure board can reach, plus the full setup and settings portal flow. Generated from the firmware itself.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2316150f'/><rect x='7' y='9' width='18' height='4' rx='1' fill='%23faf9f7'/><rect x='7' y='16' width='11' height='4' rx='1' fill='%23faf9f7'/><rect x='7' y='23' width='14' height='2' rx='1' fill='%238a857a'/></svg>">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="./">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+      Transit-Elnk
+    </a>
+    <div class="nav-links">
+      <a href="./#features">Features</a>
+      <a href="./#offline">Offline</a>
+      <a href="./#setup">Setup</a>
+      <a href="./#specs">Specs</a>
+      <a href="gallery.html" aria-current="page">Gallery</a>
+      <a class="cta" href="https://github.com/shelbeeely/Transit-Elnk-Firmware">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<main id="main">
+
+<section class="hero" style="padding-bottom:2rem">
+  <div class="wrap">
+    <span class="eyebrow">Gallery</span>
+    <h1 style="max-width:20ch">Every state the board can reach.</h1>
+    <p class="lede">
+      Nothing here is a mockup. The board frames come out of the real render engine
+      driven by the host test suite; the portal pages come from a headless browser
+      loading the exact HTML the firmware serves from its access point.
+    </p>
+    <p class="lede" style="font-size:1rem">
+      Regenerate the lot with <code>tools/refresh_screenshots.sh</code>.
+    </p>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Departure board</p>
+      <h2>Normal operation</h2>
+    </div>
+    <div class="gallery">
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board.png" width="800" height="480" loading="lazy" alt="Three route rows with countdown chips and a real-time badge."></div>
+        <figcaption><b>Live board</b>Countdowns in minutes, an RT badge on real-time predictions, battery and clock in the header.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_scheduled_vs_realtime.png" width="800" height="480" loading="lazy" alt="Chips showing scheduled times and deltas beside real-time countdowns."></div>
+        <figcaption><b>Scheduled vs. real time</b>A late bus reads <code>+4 sch 22:18</code>; an early one <code>-2</code>. Departures without real-time data stay unannotated.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_leave_now.png" width="800" height="480" loading="lazy" alt="Board with an imminent departure in bold with an outline, and an urgent preset line."></div>
+        <figcaption><b>Leave-now urgency</b>Five minutes or closer gets bold type and an outline — including on a preset trip's leave-by line.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_with_presets.png" width="800" height="480" loading="lazy" alt="Departure board with Home and Work preset lines above the footer."></div>
+        <figcaption><b>Preset trips</b>Home and Work chains resolved to a leave-by time and transfer points. A preset with no viable trip says so.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_focus_mode.png" width="800" height="480" loading="lazy" alt="Two large centred rows, each with a route, headsign and big countdown."></div>
+        <figcaption><b>Focus mode</b>Only the one or two soonest departures, drawn as large as the panel allows.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel" style="max-width:320px"><img src="screenshots/departure_board_portrait.png" width="480" height="800" loading="lazy" alt="The same board rotated to a 480 by 800 portrait layout."></div>
+        <figcaption><b>Portrait</b>Rotated 90&deg;. The layout reflows rather than cropping.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Departure board</p>
+      <h2>Offline and edge cases</h2>
+      <p>The states that decide whether a board is trustworthy: what it does when it
+      knows less than it would like.</p>
+    </div>
+    <div class="gallery">
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_offline_cached.png" width="800" height="480" loading="lazy" alt="Board header reading Cached 2h ago and Offline."></div>
+        <figcaption><b>Cached</b>Real departures from the last good fetch, clearly aged. Anything that has already left is pruned out.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_cached_unknown_age.png" width="800" height="480" loading="lazy" alt="Board header reading Cached (age unknown) and Offline."></div>
+        <figcaption><b>Cached, age unknown</b>Offline long enough that the estimated clock aged out. Reporting &ldquo;just now&rdquo; here would be the one lie worth avoiding.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_offline_timetable.png" width="800" height="480" loading="lazy" alt="Board header reading Timetable and Offline."></div>
+        <figcaption><b>Static timetable</b>Read off the SD card. Scheduled times only — no delays, no cancellations, and no expiry date on its usefulness.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_timetable_expired.png" width="800" height="480" loading="lazy" alt="Board reading Timetable expired Sep 19, 2026."></div>
+        <figcaption><b>Timetable expired</b>Past the feed's own validity window the schedule is wrong, not just old. The board names the date and asks for a fresh card.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_offline_nocache.png" width="800" height="480" loading="lazy" alt="Board reading No Wi-Fi with a message about nothing cached."></div>
+        <figcaption><b>Offline, nothing cached</b>A first boot out of range. Distinct from an expired cache, because the fix is different.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/departure_board_empty.png" width="800" height="480" loading="lazy" alt="Board reading No departures to show."></div>
+        <figcaption><b>Nothing scheduled</b>Online, working, and the stop is simply quiet. Three different empty boards, three different messages.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">On-device screens</p>
+      <h2>Drawn on the panel during setup</h2>
+    </div>
+    <div class="gallery">
+      <figure>
+        <div class="panel"><img src="screenshots/setup_prompt.png" width="800" height="480" loading="lazy" alt="Full-screen prompt telling the user to join the TransitBoard-Setup network."></div>
+        <figcaption><b>Setup prompt</b>What the panel shows while its access point is up, before a phone has connected.</figcaption>
+      </figure>
+      <figure>
+        <div class="panel"><img src="screenshots/setup_list.png" width="800" height="480" loading="lazy" alt="A list of three nearby stops with one selected and inverted."></div>
+        <figcaption><b>Selection list</b>The generic list screen, with the selected row inverted.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Captive portal</p>
+      <h2>First-run setup, as seen from a phone</h2>
+      <p>Served from the board's own access point. Each step writes as soon as it's
+      confirmed, so an interrupted setup resumes where it stopped.</p>
+    </div>
+    <div class="gallery portal">
+      <figure>
+        <div class="shot"><img src="screenshots/portal_setup_wifi.png" width="840" height="1006" loading="lazy" alt="Wi-Fi step with a scanned network list, SSID and password fields."></div>
+        <figcaption><b>1 · Wi-Fi</b>Scanned networks, or type one in.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_setup_apikey.png" width="840" height="384" loading="lazy" alt="API key entry step."></div>
+        <figcaption><b>2 · API key</b>Checked with one live call before it's stored.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_setup_stop.png" width="840" height="998" loading="lazy" alt="Stop search with three Spokane results listed."></div>
+        <figcaption><b>3 · Stop</b>Search by rough coordinates and part of a name.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_setup_done.png" width="840" height="220" loading="lazy" alt="Setup complete screen."></div>
+        <figcaption><b>4 · Done</b>The board takes over and draws its first frame.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Captive portal</p>
+      <h2>Settings</h2>
+      <p>Reopened by a long press of the power button at boot.</p>
+    </div>
+    <div class="gallery portal">
+      <figure>
+        <div class="shot"><img src="screenshots/portal_settings_display.png" width="840" height="628" loading="lazy" alt="Display orientation and time zone settings."></div>
+        <figcaption><b>Display &amp; time</b>Orientation, and the POSIX time zone the timetable depends on.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_settings_sta.png" width="840" height="422" loading="lazy" alt="Spokane Transit stop number entry."></div>
+        <figcaption><b>Spokane Transit</b>Validated against a baked-in stop table as you type it.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_settings_presets.png" width="840" height="1730" loading="lazy" alt="Preset trip editor with a configured leg and a live direction picker."></div>
+        <figcaption><b>Home &amp; Work</b>Per-leg route, boarding stop, direction and transfer stop. Directions come from live data, because a stop alone can't say which way a route continues.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_settings_buswifi.png" width="840" height="1180" loading="lazy" alt="Bus Wi-Fi sign-in configuration with advanced override fields."></div>
+        <figcaption><b>Bus Wi-Fi</b>An open network to fall back on, plus overrides for portals the board can't read automatically.</figcaption>
+      </figure>
+      <figure>
+        <div class="shot"><img src="screenshots/portal_settings_done.png" width="840" height="232" loading="lazy" alt="Settings saved confirmation."></div>
+        <figcaption><b>Saved</b>The portal shuts down and the board redraws.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="colophon" style="margin-top:0;padding-top:0;border-top:0">
+      <p><a href="./">&larr; Back to the overview</a></p>
+      <p>
+        Departure data is powered by <a href="https://transitapp.com/">Transit</a>.
+        An independent hobby project, not affiliated with or endorsed by Transit,
+        Spokane Transit Authority, or Xteink.
+      </p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

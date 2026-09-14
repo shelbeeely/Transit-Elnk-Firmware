@@ -823,6 +823,104 @@ void test_scheduled_board_snapshot() {
   TEST_ASSERT_TRUE_MESSAGE(target.writePng(path), "failed to write departure_board_offline_timetable.png");
 }
 
+// --- Remaining states, captured for the documentation site --------------
+//
+// These assert the frame paints and then write a PNG; the behavioural
+// assertions for each state live in the tests above. Their value is that
+// docs/screenshots/ and the product site show every state the board can
+// actually reach, generated from the real renderer rather than mocked up.
+
+void test_snapshot_leave_now_urgency() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+
+  std::vector<DirectionBoard> board;
+  DirectionBoard imminent;
+  imminent.globalRouteId = "1:31";
+  imminent.routeShortName = "31";
+  imminent.routeDisplayShortName = makeDisplayShortName("bus-31", "31");
+  imminent.routeColor = "111111";
+  imminent.routeTextColor = "FFFFFF";
+  imminent.departures = {makeDeparture("Downtown", kNow + 2 * 60, /*realTime=*/true),
+                         makeDeparture("Downtown", kNow + 22 * 60)};
+  board.push_back(imminent);
+
+  DirectionBoard later;
+  later.globalRouteId = "1:32";
+  later.routeShortName = "32";
+  later.routeDisplayShortName = makeDisplayShortName("bus-32", "32");
+  later.routeColor = "888888";
+  later.routeTextColor = "000000";
+  later.departures = {makeDeparture("Shadle", kNow + 17 * 60), makeDeparture("Shadle", kNow + 47 * 60)};
+  board.push_back(later);
+
+  BoardStatus status = makeSampleStatus();
+  status.presetTrips = {{"Home", "leave by 5:42p - 31 -> transfer ~5:58p -> 32", /*leaveNow=*/true}};
+  engine.renderDepartureBoard(board, status);
+
+  TEST_ASSERT_TRUE(target.hasVisibleContent(2));
+  TEST_ASSERT_TRUE(target.writePng(snapshotPath("departure_board_leave_now.png")));
+}
+
+void test_snapshot_empty_board_online() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+  engine.renderDepartureBoard({}, makeSampleStatus());
+  TEST_ASSERT_TRUE(target.writePng(snapshotPath("departure_board_empty.png")));
+}
+
+void test_snapshot_offline_with_no_cache() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+  BoardStatus status = makeSampleStatus();
+  status.wifiOk = false;
+  status.lastFetchFailed = true;
+  status.lastUpdatedEpoch = 0;
+  engine.renderDepartureBoard({}, status);
+  TEST_ASSERT_TRUE(target.writePng(snapshotPath("departure_board_offline_nocache.png")));
+}
+
+void test_snapshot_expired_timetable() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+  BoardStatus status = makeSampleStatus();
+  status.wifiOk = false;
+  status.lastFetchFailed = true;
+  status.source = BoardStatus::DepartureSource::kScheduled;
+  status.scheduleExpired = true;
+  status.scheduleValidUntil = 20260919;
+  engine.renderDepartureBoard({}, status);
+  TEST_ASSERT_TRUE(target.writePng(snapshotPath("departure_board_timetable_expired.png")));
+}
+
+void test_snapshot_cached_age_unknown() {
+  transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
+  NoopPresenter presenter;
+  FakeHttpTransport transport;
+  IconCache iconCache(transport);
+  RenderEngine engine(target, presenter, iconCache, kScreenWidth, kScreenHeight);
+  BoardStatus status = makeSampleStatus();
+  status.wifiOk = false;
+  status.lastFetchFailed = true;
+  status.source = BoardStatus::DepartureSource::kCached;
+  status.cachedAgeMin = -1;
+  status.lastUpdatedEpoch = 0;
+  engine.renderDepartureBoard(makeSampleBoard(), status);
+  TEST_ASSERT_TRUE(target.writePng(snapshotPath("departure_board_cached_unknown_age.png")));
+}
+
 void test_setup_prompt_snapshot_paints_a_nontrivial_frame() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -883,6 +981,11 @@ int main(int argc, char** argv) {
   RUN_TEST(test_a_chip_without_a_scheduled_time_is_unannotated);
   RUN_TEST(test_scheduled_source_is_marked_distinctly_from_live_and_cached);
   RUN_TEST(test_scheduled_board_snapshot);
+  RUN_TEST(test_snapshot_leave_now_urgency);
+  RUN_TEST(test_snapshot_empty_board_online);
+  RUN_TEST(test_snapshot_offline_with_no_cache);
+  RUN_TEST(test_snapshot_expired_timetable);
+  RUN_TEST(test_snapshot_cached_age_unknown);
   RUN_TEST(test_setup_prompt_snapshot_paints_a_nontrivial_frame);
   RUN_TEST(test_setup_list_snapshot_paints_a_nontrivial_frame);
   return UNITY_END();

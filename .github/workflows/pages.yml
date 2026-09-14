@@ -1,0 +1,80 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    # Only when something the site actually renders has changed. The
+    # screenshots are generated from src/ and test/, but those are rebuilt
+    # deliberately (tools/refresh_screenshots.sh) and committed, so the
+    # committed PNGs are what matters here -- not every firmware change.
+    paths:
+      - 'site/**'
+      - 'docs/screenshots/**'
+      - 'tools/build_site.sh'
+      - '.github/workflows/pages.yml'
+  # So the site can be republished without a content change (e.g. after
+  # enabling Pages for the first time).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run supersedes an older one rather
+# than racing it. In-progress runs are allowed to finish so a half-uploaded
+# artifact is never published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble _site
+        run: tools/build_site.sh
+
+      - name: Check every referenced asset exists
+        # A broken <img> is invisible in CI and obvious to a visitor, and
+        # renaming a screenshot is exactly the kind of change that causes
+        # one. Cheap to catch here.
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+          site = pathlib.Path('_site')
+          missing = []
+          for page in site.rglob('*.html'):
+              html = page.read_text()
+              for attr in ('src', 'href'):
+                  for ref in re.findall(rf'{attr}="([^"]+)"', html):
+                      if ref.startswith(('http://', 'https://', 'data:', '#', 'mailto:')):
+                          continue
+                      target = (page.parent / ref.split('#')[0]).resolve()
+                      if not target.exists():
+                          missing.append(f"{page.relative_to(site)} -> {ref}")
+          if missing:
+              print("Missing local assets:")
+              print("\n".join(f"  {m}" for m in missing))
+              sys.exit(1)
+          print("all local refs resolve")
+          PY
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

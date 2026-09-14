@@ -20,3 +20,7 @@ sd_card_data/
 secrets.h
 *.secrets.h
 .env
+
+# Built output of tools/build_site.sh -- assembled from site/ and
+# docs/screenshots/ on demand and by the Pages workflow, never committed.
+_site/
