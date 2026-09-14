@@ -132,6 +132,26 @@ pio test -e native        # host-side unit tests, no hardware/toolchain needed
 `pio run -e xteink_x4` downloads an ESP32 toolchain on first run — allow a
 few minutes. CI (`.github/workflows/ci.yml`) runs both on every push/PR.
 
+### On real hardware
+
+```sh
+tools/bringup.sh          # build + flash + monitor, logging the whole session
+tools/bringup.sh --field  # same, but the normal sleeping firmware
+```
+
+`tools/bringup.sh` flashes `[env:xteink_x4_bringup]`, which is the same
+firmware plus `-DFREEINK_BRINGUP=1`: it waits for a USB host before
+printing, runs a hardware self-test (panel refresh, NVS, SD tables, battery
+voltage, heap headroom, Wi-Fi scan), and then holds the board awake with a
+small serial console instead of deep-sleeping.
+
+Both builds print a **boot report** at startup and a **wake summary** at the
+end of every cycle — flat ASCII, greppable, and with every secret reduced to
+a fingerprint by `formatBootReport()` itself so no caller can leak one.
+[`docs/HARDWARE_BRINGUP.md`](docs/HARDWARE_BRINGUP.md) walks through the
+first flash, how to read the output, the board-specific risks worth checking
+first, and how to debug it live.
+
 ### Screenshots
 
 ```sh
@@ -159,8 +179,9 @@ layout change so the images above match what the firmware actually draws.
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | Boot → setup-if-unprovisioned → Wi-Fi + fetch → render → deep sleep |
-| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), preset "Home"/"Work" trip-transfer planning (`trip_planner` — see `docs/TRIP_PLANNER.md`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`), offline support (`local_time` timezone/GTFS service days, `time_keeper` RTC-memory clock, `offline_cache` last-known-good board, `sta_static_schedule` SD-card timetable, `captive_portal` open-network sign-in — see `docs/OFFLINE_AND_BUS_WIFI.md`) |
+| `src/transit/`, `include/transit/` | Implementation and headers for each module: data model & JSON parsing (`models`), Transit API v4 client (`api_client`), NVS config store (`config_store`), departure filter/sort/badge logic (`ui_logic`), e-ink layout and drawing (`render_engine`), route-icon SVG fetch/rasterize (`icon_cache`, `svg_path`), wake/sleep scheduling (`power_scheduler`), captive-portal setup + settings (`setup_flow`), preset "Home"/"Work" trip-transfer planning (`trip_planner` — see `docs/TRIP_PLANNER.md`), STA (Spokane Transit Authority) second data source (`sta_*` — see `docs/STA_INTEGRATION.md`), offline support (`local_time` timezone/GTFS service days, `time_keeper` RTC-memory clock, `offline_cache` last-known-good board, `sta_static_schedule` SD-card timetable, `captive_portal` open-network sign-in — see `docs/OFFLINE_AND_BUS_WIFI.md`), and serial diagnostics for hardware bringup (`boot_report` — see `docs/HARDWARE_BRINGUP.md`) |
 | `test/` | Host-side Unity tests for the hardware-independent modules (`pio test -e native`) |
+| `tools/bringup.sh`, `tools/log_relay.py`, `tools/pio_version.py` | Hardware bringup: build/flash/monitor with a captured log, relay that log to a remote session, and bake `git describe` into the image so the boot report can name the build |
 | `tools/gen_sta_tables.py` | Regenerates the baked-in STA route/stop tables, and the SD card's full static GTFS including the timetable, from a fresh feed |
 | `tools/refresh_screenshots.sh`, `tools/png_recompress.py`, `tools/capture_portal_screenshots.py` | Regenerate and shrink every screenshot under `docs/screenshots/` — board frames from the render engine, portal pages from a headless browser |
 | `site/`, `tools/build_site.sh` | The GitHub Pages product site (`.github/workflows/pages.yml` deploys it) |
@@ -184,4 +205,5 @@ implementation time.
 | [`docs/DEPLOYMENT_OPS.md`](docs/DEPLOYMENT_OPS.md) | API key tier limits and what "continuous" polling actually costs |
 | [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) | Spokane Transit Authority: the second, optional data source — how it's fetched, the baked-in route/stop tables, and its compliance notes |
 | [`docs/TRIP_PLANNER.md`](docs/TRIP_PLANNER.md) | Preset "Home"/"Work" trip-transfer chains — how a plan is computed from `stop_departures()` data, direction disambiguation, the settings UX, and known limitations |
+| [`docs/HARDWARE_BRINGUP.md`](docs/HARDWARE_BRINGUP.md) | Putting the firmware on a physical X4: the bringup build and its serial console, how to read the boot report / wake summary / self-test, the first-bringup risks specific to this board, and the options for debugging it live |
 | [`docs/OFFLINE_AND_BUS_WIFI.md`](docs/OFFLINE_AND_BUS_WIFI.md) | What works with no network: local time and GTFS service days, the RTC-memory approximate clock and its real accuracy, the NVS board cache and how it ages, the SD-card static timetable (format, holidays, expiry), scheduled-vs-real-time comparison, and captive-portal sign-in on an open network |

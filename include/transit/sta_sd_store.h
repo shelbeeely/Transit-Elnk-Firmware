@@ -80,6 +80,27 @@ class StaSdStore {
   // reasoning as begin()'s attempted_ flag).
   StaticScheduleTables scheduleTables();
 
+  // What begin() actually found, for the boot report (boot_report.h). A
+  // card that mounts but carries no tables is indistinguishable from a
+  // missing card everywhere else in this firmware -- every caller already
+  // degrades silently to the flash-baked tables -- so bringup has no way
+  // to tell "no card" from "wrong card" without this. routesTable /
+  // stopsTable / tripsTable are the version-1 set every card has;
+  // stopTimesTable / calendarTable are the version-2 timetable additions,
+  // and their absence on an otherwise-good card is exactly the symptom of
+  // a card written by an older tools/gen_sta_tables.py.
+  struct SdStatus {
+    bool mounted = false;
+    uint64_t totalBytes = 0;
+    bool routesTable = false;
+    bool stopsTable = false;
+    bool tripsTable = false;
+    bool stopTimesTable = false;
+    bool calendarTable = false;
+    bool calendarDatesTable = false;
+  };
+  SdStatus status() const;
+
  private:
   // Wraps one open FsFile as a BinaryTableReader (sta_gtfs_binary.h's
   // hardware-independent half only needs seek+read, both real SdFat

@@ -137,9 +137,23 @@ class TransitApiClient {
   bool searchStops(double lat, double lon, const std::string& query,
                     const SearchStopsParams& params, SearchStopsResponse& out);
 
+  // What the most recent request actually came back with, for the wake
+  // summary (boot_report.h). Returning only bool from the four endpoint
+  // methods above is right for the callers that just need to know whether
+  // to draw a board, but it collapses "401, your key is wrong", "429,
+  // you're over the free tier" and "DNS never resolved" into one
+  // indistinguishable false -- which is precisely the distinction a
+  // bringup log has to make. statusCode is 0 when the request never
+  // reached a server (transportOk false), matching HttpResponse's own
+  // convention.
+  int lastStatusCode() const { return lastStatusCode_; }
+  bool lastTransportOk() const { return lastTransportOk_; }
+
  private:
   HttpTransport& transport_;
   std::string apiKey_;
+  int lastStatusCode_ = 0;
+  bool lastTransportOk_ = false;
 };
 
 }  // namespace transit

@@ -11,10 +11,14 @@
 // file silently.
 
 #include <Arduino.h>
+#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
 #include <FreeInkUIDisplayTarget.h>
 #include <WiFi.h>
+#include <esp_attr.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -24,6 +28,7 @@
 #include <vector>
 
 #include "transit/api_client.h"
+#include "transit/boot_report.h"
 #include "transit/captive_portal.h"
 #include "transit/config_store.h"
 #include "transit/http_transport.h"
@@ -40,6 +45,20 @@
 #include "transit/time_keeper.h"
 #include "transit/trip_planner.h"
 #include "transit/ui_logic.h"
+
+// Supplied by platformio.ini (and, for the version, tools/pio_version.py
+// off `git describe`). Defaulted here so the file still compiles if someone
+// builds it outside this project's envs -- an unversioned build reports
+// itself as such rather than failing to compile.
+#ifndef FREEINK_FW_VERSION
+#define FREEINK_FW_VERSION "unversioned"
+#endif
+#ifndef FREEINK_BUILD_ENV
+#define FREEINK_BUILD_ENV "unknown"
+#endif
+#ifndef FREEINK_BRINGUP
+#define FREEINK_BRINGUP 0
+#endif
 
 using namespace transit;
 
@@ -278,9 +297,385 @@ bool waitForBootButtonAndCheckSettingsHold() {
   return millis() - pressStartMs >= kSettingsHoldMs;
 }
 
+// ---------------------------------------------------------------------------
+// Serial diagnostics (boot_report.h)
+//
+// Everything below is what makes a board debuggable over USB. It runs on
+// every build, not just the bringup one, because none of it happens at all
+// unless a USB host is actually attached: `if (Serial)` is false on a
+// battery-powered board in the field, and every call site below is behind
+// that check rather than behind printIfSerial()'s -- an argument like
+// formatBootReport(...) is evaluated before the callee can decide not to
+// print it, and gathering the report itself costs an SD status read and a
+// battery ADC conversion.
+// ---------------------------------------------------------------------------
+
+// Survives deep sleep, reinitialized by a power-on reset -- the same RTC
+// fast-memory mechanism time_keeper.cpp uses for the approximate clock. A
+// boot count that keeps resetting to 1 is the signature of a board that is
+// browning out rather than sleeping, which is otherwise very hard to tell
+// apart from normal operation.
+RTC_DATA_ATTR uint32_t g_bootCount = 0;
+
+// Kept at file scope so the bringup REPL can reprint it without re-reading
+// every peripheral (and, more importantly, without a second SD mount).
+BootReport g_bootReport;
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external reset";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "PANIC (crash)";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "unknown";
+  }
+}
+
+const char* wakeCauseName(esp_sleep_wakeup_cause_t cause) {
+  switch (cause) {
+    case ESP_SLEEP_WAKEUP_TIMER: return "timer";
+    case ESP_SLEEP_WAKEUP_GPIO: return "gpio";
+    case ESP_SLEEP_WAKEUP_EXT0: return "ext0";
+    case ESP_SLEEP_WAKEUP_EXT1: return "ext1";
+    case ESP_SLEEP_WAKEUP_ULP: return "ulp";
+    case ESP_SLEEP_WAKEUP_UNDEFINED: return "not a sleep wake";
+    default: return "other";
+  }
+}
+
+std::string efuseMacString() {
+  const uint64_t mac = ESP.getEfuseMac();
+  char buf[32];
+  // getEfuseMac() returns the 48-bit address byte-reversed relative to how
+  // a MAC is conventionally written, which is why this indexes downward --
+  // printing it the other way produces a plausible-looking address that
+  // matches nothing on the network.
+  std::snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                static_cast<unsigned>((mac >> 0) & 0xFF), static_cast<unsigned>((mac >> 8) & 0xFF),
+                static_cast<unsigned>((mac >> 16) & 0xFF),
+                static_cast<unsigned>((mac >> 24) & 0xFF),
+                static_cast<unsigned>((mac >> 32) & 0xFF),
+                static_cast<unsigned>((mac >> 40) & 0xFF));
+  return buf;
+}
+
+// Snapshot of everything worth knowing at boot. Call after the peripherals
+// have had their begin() calls (the SD and panel fields are meaningless
+// before that) and before the setup flow, so an unprovisioned board still
+// reports itself.
+BootReport gatherBootReport() {
+  BootReport report;
+
+  report.firmwareVersion = FREEINK_FW_VERSION;
+  report.buildTimestamp = __DATE__ " " __TIME__;
+  report.buildEnv = FREEINK_BUILD_ENV;
+
+  report.chipModel = ESP.getChipModel();
+  report.chipRevision = ESP.getChipRevision();
+  report.cpuFreqMhz = static_cast<int>(ESP.getCpuFreqMHz());
+  report.flashSizeBytes = ESP.getFlashChipSize();
+  report.macAddress = efuseMacString();
+
+  report.resetReason = resetReasonName(esp_reset_reason());
+  report.wakeCause = wakeCauseName(esp_sleep_get_wakeup_cause());
+  report.bootCount = g_bootCount;
+  report.freeHeapBytes = ESP.getFreeHeap();
+  report.largestFreeBlockBytes = ESP.getMaxAllocHeap();
+  report.minEverFreeHeapBytes = ESP.getMinFreeHeap();
+
+  // begin() returns void, so "did the panel come up" has to be inferred
+  // from it having produced a framebuffer of a plausible size.
+  report.displayWidth = g_display.getDisplayWidth();
+  report.displayHeight = g_display.getDisplayHeight();
+  report.displayOk =
+      g_display.getFrameBuffer() != nullptr && report.displayWidth > 0 && report.displayHeight > 0;
+
+  const sta::StaSdStore::SdStatus sd = g_staSdStore.status();
+  report.sdMounted = sd.mounted;
+  report.sdTotalBytes = sd.totalBytes;
+  report.sdRoutesTable = sd.routesTable;
+  report.sdStopTimesTable = sd.stopTimesTable;
+  report.sdCalendarTable = sd.calendarTable;
+
+  BatteryMonitor batteryMonitor;
+  const BatteryMonitor::Status battery = batteryMonitor.readStatus();
+  report.batterySupported = battery.supported;
+  if (battery.percentageKnown) report.batteryPercent = static_cast<int>(battery.percentage);
+  if (battery.millivoltsKnown) report.batteryMillivolts = static_cast<int>(battery.millivolts);
+  report.batteryCharging = battery.chargingKnown && battery.charging;
+
+  report.provisioned = g_configStore.isProvisioned();
+  report.wifiSsid = g_configStore.wifiSsid();
+  // Handed over whole on purpose: formatBootReport() fingerprints them, so
+  // the redaction lives in one place that no caller can forget. See
+  // boot_report.h.
+  report.wifiPassword = g_configStore.wifiPassword();
+  report.apiKey = g_configStore.apiKey();
+  report.stopId = g_configStore.stopId();
+  report.staStopCode = g_configStore.staStopCode();
+  report.busWifiSsid = g_configStore.busWifiSsid();
+  report.timezone = g_configStore.timezone();
+  report.refreshIntervalMin = g_configStore.refreshIntervalMin();
+  report.sleepWindowStartMin = g_configStore.sleepWindowStartMin();
+  report.sleepWindowEndMin = g_configStore.sleepWindowEndMin();
+  const std::string cached = g_configStore.cachedBoard();
+  report.cachedBoardPresent = !cached.empty();
+  report.cachedBoardBytes = cached.size();
+
+  const ApproxClockState clock = loadApproxClock();
+  report.approxClockValid = clock.valid;
+  if (clock.valid) {
+    report.approxClockEpoch = estimateNowEpoch(clock, millis());
+    report.approxClockErrorSec = approximateClockErrorSeconds(clock, millis());
+    report.wakesSinceSync = clock.wakesSinceSync;
+  }
+
+  return report;
+}
+
+// Guarded so a board running on battery with nothing plugged in doesn't
+// spend milliseconds formatting a report into a void.
+void printIfSerial(const std::string& text) {
+  if (!Serial) return;
+  Serial.print(text.c_str());
+  Serial.flush();
+}
+
+#if FREEINK_BRINGUP
+// Deliberately exercises the hardware rather than inferring its health from
+// a normal wake: a wake cycle that finds no Wi-Fi tells you nothing about
+// whether the radio works, and one that renders a cached board tells you
+// nothing about whether the panel's full-refresh waveform is right.
+//
+// Bringup-only, and not merely because the field build has no way to reach
+// it: the panel check deliberately burns two full refreshes (several
+// seconds and the cycle's largest single current draw) and the Wi-Fi scan
+// another few, which is exactly the wrong trade on a battery.
+SelfTestReport runSelfTest(const BootReport& report, const std::string& expectedSsid) {
+  SelfTestReport out;
+  char detail[192];
+
+  {
+    SelfTestResult r;
+    r.name = "display";
+    r.passed = report.displayOk;
+    std::snprintf(detail, sizeof(detail), "%dx%d framebuffer %s", report.displayWidth,
+                  report.displayHeight, report.displayOk ? "allocated" : "MISSING");
+    r.detail = detail;
+    out.results.push_back(r);
+  }
+
+  {
+    // A visible black/white flash. There is no way to read the panel back,
+    // so this cannot fail automatically -- what it produces is a human
+    // verdict ("did the screen flash twice?") plus the refresh timing,
+    // which is the number that actually moves when a waveform or the SPI
+    // wiring is wrong.
+    SelfTestResult r;
+    r.name = "panel refresh";
+    if (!report.displayOk) {
+      r.skipped = true;
+      r.detail = "no framebuffer";
+    } else {
+      const uint32_t start = millis();
+      g_display.clearScreen(0x00);
+      g_display.displayBuffer(EInkDisplay::FULL_REFRESH);
+      g_display.clearScreen(0xFF);
+      g_display.displayBuffer(EInkDisplay::FULL_REFRESH);
+      const uint32_t elapsed = millis() - start;
+      r.passed = true;
+      std::snprintf(detail, sizeof(detail),
+                    "2 full refreshes in %u ms -- confirm the panel flashed black then white",
+                    static_cast<unsigned>(elapsed));
+      r.detail = detail;
+    }
+    out.results.push_back(r);
+  }
+
+  {
+    SelfTestResult r;
+    r.name = "nvs config";
+    // A refresh interval of 0 means ConfigStore handed back neither a
+    // stored value nor its documented default, which only happens when the
+    // NVS namespace itself failed to open.
+    const int interval = g_configStore.refreshIntervalMin();
+    r.passed = interval > 0;
+    std::snprintf(detail, sizeof(detail), "refresh interval reads back as %d min", interval);
+    r.detail = detail;
+    out.results.push_back(r);
+  }
+
+  {
+    SelfTestResult r;
+    r.name = "sd card";
+    if (!report.sdMounted) {
+      // No card is a supported configuration -- everything SD-backed has a
+      // flash-baked fallback -- so this is not a failure, just a fact.
+      r.skipped = true;
+      r.detail = "not mounted (optional; STA falls back to flash tables)";
+    } else {
+      r.passed = report.sdRoutesTable;
+      std::snprintf(detail, sizeof(detail), "mounted, routes=%s stop_times=%s calendar=%s",
+                    report.sdRoutesTable ? "yes" : "NO", report.sdStopTimesTable ? "yes" : "NO",
+                    report.sdCalendarTable ? "yes" : "NO");
+      r.detail = detail;
+    }
+    out.results.push_back(r);
+  }
+
+  {
+    SelfTestResult r;
+    r.name = "battery";
+    if (!report.batterySupported || report.batteryMillivolts < 0) {
+      r.skipped = true;
+      r.detail = "no telemetry on this board profile";
+    } else {
+      // A 1S Li-ion pack outside this range is a divider/ADC problem, not a
+      // flat battery -- a genuinely empty cell still reads well above 2.5 V
+      // before the protection circuit cuts it off.
+      r.passed = report.batteryMillivolts > 2500 && report.batteryMillivolts < 4500;
+      std::snprintf(detail, sizeof(detail), "%d mV, %d%%%s", report.batteryMillivolts,
+                    report.batteryPercent, report.batteryCharging ? ", charging" : "");
+      r.detail = detail;
+    }
+    out.results.push_back(r);
+  }
+
+  {
+    SelfTestResult r;
+    r.name = "heap headroom";
+    // The STA feed is ~190 KB and is parsed in RAM; sta_client.h refuses to
+    // fetch below its own threshold. Anything under this leaves no room for
+    // it even before TLS buffers.
+    constexpr uint32_t kMinFreeHeap = 90u * 1024u;
+    r.passed = report.freeHeapBytes >= kMinFreeHeap;
+    std::snprintf(detail, sizeof(detail), "%u B free, largest block %u B (want >= %u B)",
+                  static_cast<unsigned>(report.freeHeapBytes),
+                  static_cast<unsigned>(report.largestFreeBlockBytes),
+                  static_cast<unsigned>(kMinFreeHeap));
+    r.detail = detail;
+    out.results.push_back(r);
+  }
+
+  {
+    SelfTestResult r;
+    r.name = "wifi scan";
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(/*wifioff=*/false);
+    const int found = WiFi.scanNetworks();
+    bool sawConfigured = false;
+    int configuredRssi = 0;
+    for (int i = 0; i < found; ++i) {
+      if (!expectedSsid.empty() && WiFi.SSID(i) == expectedSsid.c_str()) {
+        sawConfigured = true;
+        configuredRssi = WiFi.RSSI(i);
+      }
+    }
+    // The radio working and the configured network being reachable are two
+    // different findings; conflating them turns "you typed the SSID wrong"
+    // into "the Wi-Fi is broken".
+    r.passed = found > 0;
+    if (expectedSsid.empty()) {
+      std::snprintf(detail, sizeof(detail), "%d networks (no SSID configured yet)", found);
+    } else if (sawConfigured) {
+      std::snprintf(detail, sizeof(detail), "%d networks; \"%s\" at %d dBm", found,
+                    expectedSsid.c_str(), configuredRssi);
+    } else {
+      std::snprintf(detail, sizeof(detail), "%d networks; configured SSID \"%s\" NOT in range",
+                    found, expectedSsid.c_str());
+    }
+    r.detail = detail;
+    WiFi.scanDelete();
+    out.results.push_back(r);
+  }
+
+  return out;
+}
+
+// Instead of deep-sleeping at the end of the cycle, stay awake so the USB
+// CDC link survives and the board can be poked at. Never returns: 'c'
+// reboots (which re-runs the whole cycle from a known state, rather than
+// re-entering it halfway with stale globals) and 's' sleeps for real.
+[[noreturn]] void bringupHold(const std::string& expectedSsid, int wakeIntervalMin) {
+  const char* kHelp =
+      "\n-- bringup console --\n"
+      "  r  reprint the boot report\n"
+      "  t  run the self-test again\n"
+      "  w  wifi scan\n"
+      "  c  reboot and run a full wake cycle\n"
+      "  s  enter deep sleep now (normal firmware behaviour)\n"
+      "  h  this help\n"
+      "The board is being held awake; it will NOT sleep on its own.\n";
+  printIfSerial(kHelp);
+
+  while (true) {
+    if (Serial && Serial.available() > 0) {
+      const int c = Serial.read();
+      switch (c) {
+        case 'r': printIfSerial(formatBootReport(g_bootReport)); break;
+        case 't': printIfSerial(formatSelfTestReport(runSelfTest(g_bootReport, expectedSsid))); break;
+        case 'w': {
+          WiFi.mode(WIFI_STA);
+          const int found = WiFi.scanNetworks();
+          if (Serial) {
+            Serial.printf("\n%d networks:\n", found);
+            for (int i = 0; i < found; ++i) {
+              Serial.printf("  %-32s %4d dBm  ch%2d  %s\n", WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+                            WiFi.channel(i),
+                            WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "secured");
+            }
+          }
+          WiFi.scanDelete();
+          break;
+        }
+        case 'c':
+          printIfSerial("rebooting...\n");
+          delay(100);
+          ESP.restart();
+          break;
+        case 's':
+          printIfSerial("sleeping...\n");
+          delay(100);
+          enterDeepSleep(g_display, wakeIntervalMin);
+          break;
+        case 'h': printIfSerial(kHelp); break;
+        default: break;
+      }
+    }
+    delay(20);
+  }
+}
+#endif  // FREEINK_BRINGUP
+
 }  // namespace
 
 void setup() {
+  // First thing, before any peripheral can hang: a board that dies in
+  // BoardConfig or the SD mount should still have said hello. With
+  // ARDUINO_USB_CDC_ON_BOOT the core has already brought Serial up, but
+  // calling begin() explicitly costs nothing and keeps this correct if that
+  // flag ever changes.
+  Serial.begin(115200);
+#if FREEINK_BRINGUP
+  // USB CDC enumeration takes about a second, and a monitor started by
+  // hand takes longer still. The normal firmware must never wait for a host
+  // that will never arrive (it runs on battery), but the bringup build
+  // exists precisely to be watched, so it waits -- briefly, and no longer
+  // once the host shows up.
+  {
+    const uint32_t waitStart = millis();
+    while (!Serial && millis() - waitStart < 8000) delay(50);
+    delay(200);  // let the host's terminal attach before the first line
+  }
+#endif
+  ++g_bootCount;
+
   BoardConfig::holdPowerRails();
   BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
   bool enterSettingsRequested = waitForBootButtonAndCheckSettingsHold();
@@ -303,6 +698,17 @@ void setup() {
   applyTimezone(g_configStore.timezone());
 
   g_display.begin();
+
+  // Everything the report reads is up by now (panel, SD, NVS, battery), and
+  // nothing below has modified any of it yet -- so this is the board as it
+  // arrived at this boot, before the firmware starts changing it.
+  if (Serial) {
+    g_bootReport = gatherBootReport();
+    printIfSerial(formatBootReport(g_bootReport));
+#if FREEINK_BRINGUP
+    printIfSerial(formatSelfTestReport(runSelfTest(g_bootReport, g_configStore.wifiSsid())));
+#endif
+  }
 
   // displayTarget/presenter/renderEngine are local, not global, for the same
   // reason apiClient below is: they read real hardware state
@@ -355,12 +761,20 @@ void setup() {
   status.stopName = g_configStore.stopId();
   status.batteryPercent = readBatteryPercent();
 
+  // Filled in as the cycle runs and printed once at the end (boot_report.h).
+  // Its defaults all read as "never got there", so a cycle that dies partway
+  // through still leaves an honest record of how far it got.
+  WakeSummary summary;
+  summary.batteryPercent = status.batteryPercent;
+
   // Whatever the previous wake left in RTC memory (time_keeper.h). Read
   // before anything else touches the clock, since a successful SNTP sync
   // below overwrites the system time this is the only alternative to.
   const ApproxClockState priorClock = loadApproxClock();
 
+  const uint32_t wifiStartMs = millis();
   bool wifiOk = connectWifi(g_configStore.wifiSsid(), g_configStore.wifiPassword());
+  if (wifiOk) summary.wifiSsidUsed = g_configStore.wifiSsid();
 
   // Home network isn't in range -- try the configured open network (onboard
   // transit Wi-Fi) and, if something is intercepting it, hand the portal
@@ -369,6 +783,8 @@ void setup() {
   if (!wifiOk) {
     const std::string busSsid = g_configStore.busWifiSsid();
     if (!busSsid.empty() && connectOpenWifi(busSsid)) {
+      summary.viaBusWifi = true;
+      summary.wifiSsidUsed = busSsid;
       CaptivePortalConfig portalConfig;
       portalConfig.identity = g_configStore.busWifiIdentity();
       portalConfig.overrideSubmitUrl = g_configStore.busPortalSubmitUrl();
@@ -377,6 +793,7 @@ void setup() {
       CaptivePortalClient portalClient(g_httpTransport);
       const CaptivePortalResult portalResult = portalClient.connect(portalConfig);
       wifiOk = portalResult.online;
+      summary.viaCaptivePortalLogin = portalResult.online;
       if (!wifiOk) {
         // Associated but still walled off. Drop the association rather than
         // leaving the radio camped on a network nothing can be fetched
@@ -387,6 +804,9 @@ void setup() {
     }
   }
   status.wifiOk = wifiOk;
+  summary.wifiOk = wifiOk;
+  summary.wifiMs = millis() - wifiStartMs;
+  if (wifiOk) summary.wifiRssiDbm = WiFi.RSSI();
 
   int64_t nowEpoch = 0;
   bool clockFromSntp = false;
@@ -396,6 +816,7 @@ void setup() {
   if (wifiOk) {
     nowEpoch = syncTimeAndGetEpoch(g_configStore.timezone());
     clockFromSntp = nowEpoch > 0;
+    summary.sntpOk = clockFromSntp;
 
     // Preset "Home"/"Work" trip planning (trip_planner.h) rides along on
     // this SAME stopDepartures() call rather than issuing its own -- every
@@ -427,9 +848,19 @@ void setup() {
     params.removeCancelled = true;
 
     StopDeparturesResponse response;
+    const uint32_t fetchStartMs = millis();
     bool fetchOk = apiClient.stopDepartures(stopIds, params, response);
     status.lastFetchFailed = !fetchOk;
     anyFetchOk = anyFetchOk || fetchOk;
+    summary.fetchMs = millis() - fetchStartMs;
+    summary.transitFetchAttempted = true;
+    summary.transitFetchOk = fetchOk;
+    // 0 here means the request never reached a server at all (DNS, TLS,
+    // no route) -- a distinction a bare "fetch failed" cannot make, and the
+    // first thing worth knowing when a board that worked yesterday stops.
+    summary.transitHttpStatus = apiClient.lastStatusCode();
+    summary.transitStopIdsRequested = static_cast<int>(stopIds.size());
+    summary.transitRouteCount = static_cast<int>(response.routeDepartures.size());
     if (fetchOk) {
       // ui_logic::buildDepartureBoard() assumes it's handed exactly one
       // stop's routes -- filter the combined multi-stop response down to
@@ -465,6 +896,8 @@ void setup() {
     if (!staStopCode.empty()) {
       sta::StaClient staClient(g_httpTransport, &g_staSdStore);
       std::vector<Route> staRoutes = staClient.fetchDepartures(staStopCode);
+      summary.staFetchAttempted = true;
+      summary.staRouteCount = static_cast<int>(staRoutes.size());
       if (!staRoutes.empty()) anyFetchOk = true;
       routes.insert(routes.end(), staRoutes.begin(), staRoutes.end());
     }
@@ -482,6 +915,7 @@ void setup() {
     nowEpoch = estimateNowEpoch(priorClock, millis());
     if (nowEpoch > 0) {
       status.clockIsApproximate = true;
+      summary.clockApproximate = true;
       // Push it into the system clock too: formatClock()/localtime_r() in
       // render_engine.cpp and minutesSinceLocalMidnight() below both read
       // the C library's notion of time, not this variable, so an estimate
@@ -510,6 +944,7 @@ void setup() {
   std::vector<DirectionBoard> board;
   if (anyFetchOk) {
     board = buildDepartureBoard(routes, uiSettings, nowEpoch);
+    summary.departureSource = "live";
 
     // Persist what was just computed, so the next wake has something to
     // draw if it comes up with no network (offline_cache.h). The already-
@@ -534,10 +969,12 @@ void setup() {
       // been a cache" call for different things on screen, and the render
       // engine can only tell them apart from this flag.
       status.source = BoardStatus::DepartureSource::kCached;
+      summary.departureSource = "cached";
       // -1, not 0, when there's no clock: without one the age is genuinely
       // unknown, and reporting 0 would label a board of unknown vintage
       // "Cached just now". See BoardStatus::cachedAgeMin.
       status.cachedAgeMin = nowEpoch > 0 ? cachedAgeMinutes(restored, nowEpoch) : -1;
+      summary.cachedAgeMin = status.cachedAgeMin;
 
       // Absolute departure epochs age on their own: anything already gone
       // is dropped here rather than rendered as "Due" forever
@@ -583,6 +1020,7 @@ void setup() {
         if (!scheduled.empty() || expired) {
           board = buildScheduledBoard(scheduled);
           status.source = BoardStatus::DepartureSource::kScheduled;
+          summary.departureSource = "scheduled";
           status.scheduleValidUntil = validity.endDate;
           status.scheduleExpired = expired;
         }
@@ -601,7 +1039,16 @@ void setup() {
   status.presetTrips = presetSummaryLines;
 
   renderEngine.setFocusMode(g_configStore.focusMode());
+  const uint32_t renderStartMs = millis();
   renderEngine.renderDepartureBoard(board, status);
+  summary.renderMs = millis() - renderStartMs;
+
+  summary.nowEpoch = nowEpoch;
+  summary.presetPlanCount = static_cast<int>(presetPlans.size());
+  summary.boardDirectionCount = static_cast<int>(board.size());
+  for (const DirectionBoard& direction : board) {
+    summary.boardDepartureCount += static_cast<int>(direction.departures.size());
+  }
 
   SleepWindow sleepWindow;
   int startMin = g_configStore.sleepWindowStartMin();
@@ -623,6 +1070,17 @@ void setup() {
   const int64_t epochAtSleepEntry =
       nowEpoch > 0 ? nowEpoch + static_cast<int64_t>((millis() - nowEpochEstablishedMs) / 1000) : 0;
   saveApproxClock(nextClockState(priorClock, epochAtSleepEntry, wakeIntervalMin, clockFromSntp));
+
+  summary.nextWakeMin = wakeIntervalMin;
+  summary.totalAwakeMs = millis();
+  if (Serial) printIfSerial(formatWakeSummary(summary));
+
+#if FREEINK_BRINGUP
+  // Never returns. Deliberately after the full cycle above, so the console
+  // is reached with a real board on the panel and a real summary printed --
+  // not on a board that was diverted before it did any work.
+  bringupHold(g_configStore.wifiSsid(), wakeIntervalMin);
+#endif
 
   enterDeepSleep(g_display, wakeIntervalMin);  // noreturn — chip resets on wake
 }

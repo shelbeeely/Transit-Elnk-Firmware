@@ -24,3 +24,8 @@ secrets.h
 # Built output of tools/build_site.sh -- assembled from site/ and
 # docs/screenshots/ on demand and by the Pages workflow, never committed.
 _site/
+
+# Captured serial sessions from tools/bringup.sh. Useful locally and worth
+# pasting into an issue, but they are per-board, per-session and can capture
+# whatever was typed into the bringup console -- never committed.
+logs/

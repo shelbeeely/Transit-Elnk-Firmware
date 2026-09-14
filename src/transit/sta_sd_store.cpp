@@ -53,6 +53,22 @@ StaticScheduleTables StaSdStore::scheduleTables() {
   return tables;
 }
 
+StaSdStore::SdStatus StaSdStore::status() const {
+  SdStatus out;
+  out.mounted = sdMounted_;
+  // sdTotalBytes() is only meaningful once a volume is mounted; asking an
+  // unmounted card for its size returns a stale or zero figure that reads
+  // as a real measurement in the boot report.
+  if (sdMounted_) out.totalBytes = SDCardManager::getInstance().sdTotalBytes();
+  out.routesTable = routesReader_.isOpen();
+  out.stopsTable = stopsReader_.isOpen();
+  out.tripsTable = tripsReader_.isOpen();
+  out.stopTimesTable = stopTimesReader_.isOpen();
+  out.calendarTable = calendarReader_.isOpen();
+  out.calendarDatesTable = calendarDatesReader_.isOpen();
+  return out;
+}
+
 bool StaSdStore::lookupRoute(uint32_t routeId, SdRouteInfo& out) {
   if (!routesReader_.isOpen()) return false;
   return lookupSdRoute(routesReader_, routeId, out);

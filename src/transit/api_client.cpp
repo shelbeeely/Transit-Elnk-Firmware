@@ -142,6 +142,8 @@ bool TransitApiClient::nearbyRoutes(double lat, double lon, const NearbyRoutesPa
   addDepartureQueryParams(qb, params);
 
   HttpResponse response = transport_.get(qb.str(), {{"apiKey", apiKey_}});
+  lastStatusCode_ = response.statusCode;
+  lastTransportOk_ = response.transportOk;
   if (!response.transportOk || response.statusCode != 200) {
     out = NearbyRoutesResponse{};
     return false;
@@ -159,6 +161,8 @@ bool TransitApiClient::stopDepartures(const std::vector<std::string>& globalStop
   addDepartureQueryParams(qb, params);
 
   HttpResponse response = transport_.get(qb.str(), {{"apiKey", apiKey_}});
+  lastStatusCode_ = response.statusCode;
+  lastTransportOk_ = response.transportOk;
   if (!response.transportOk || response.statusCode != 200) {
     out = StopDeparturesResponse{};
     return false;
@@ -179,6 +183,8 @@ bool TransitApiClient::nearbyStops(double lat, double lon, const NearbyStopsPara
   qb.addIfNonEmpty("locale", params.locale);
 
   HttpResponse response = transport_.get(qb.str(), {{"apiKey", apiKey_}});
+  lastStatusCode_ = response.statusCode;
+  lastTransportOk_ = response.transportOk;
   if (!response.transportOk || response.statusCode != 200) {
     out = NearbyStopsResponse{};
     return false;
@@ -201,6 +207,8 @@ bool TransitApiClient::searchStops(double lat, double lon, const std::string& qu
   qb.addIfNonEmpty("locale", params.locale);
 
   HttpResponse response = transport_.get(qb.str(), {{"apiKey", apiKey_}});
+  lastStatusCode_ = response.statusCode;
+  lastTransportOk_ = response.transportOk;
   if (!response.transportOk || response.statusCode != 200) {
     out = SearchStopsResponse{};
     return false;

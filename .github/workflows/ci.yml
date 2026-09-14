@@ -47,3 +47,12 @@ jobs:
 
       - name: Build firmware
         run: pio run -e xteink_x4
+
+      # The bringup env is the only place -DFREEINK_BRINGUP=1 code gets
+      # compiled (the self-test and the serial console in src/main.cpp are
+      # #if'd out of the field build entirely), so without this job it would
+      # rot silently and only break when someone actually needed it -- at a
+      # desk, with a board in hand, which is the worst possible moment to
+      # discover a compile error. See docs/HARDWARE_BRINGUP.md.
+      - name: Build bringup firmware
+        run: pio run -e xteink_x4_bringup
