@@ -27,8 +27,11 @@
 
 #include <ArduinoJson.h>
 #include <Arduino.h>
+#include <Update.h>
 #include <WiFi.h>
 
+#include "transit/build_info.h"
+#include "transit/ota_update.h"
 #include "transit/sta_models.h"
 
 #include <algorithm>
@@ -358,8 +361,30 @@ off the real page once.</p>
 <label>Advanced: form field name (optional)</label>
 <input id="bus-field" placeholder="e.g. email">
 <button onclick="saveBusWifi()">Save</button>
-<button onclick="finishSettings()">Skip</button>
+<button onclick="showStep('step-firmware')">Skip</button>
 <div id="buswifi-msg" class="msg"></div>
+</section>
+
+<section id="step-firmware">
+<h2>Firmware</h2>
+<p class="leg-summary">Running <b id="fw-version">&hellip;</b> from partition
+<span id="fw-partition">&hellip;</span>.</p>
+<div id="fw-trial" class="msg err"></div>
+<label>Upload a firmware image (.bin)</label>
+<input type="file" id="fw-file" accept=".bin">
+<p class="leg-summary">The board installs it to its spare slot, then reboots
+into it. If the new build can't complete a full update cycle after a few
+tries, the board puts the old one back by itself.</p>
+<button onclick="uploadFirmware()">Install</button>
+<div id="fw-progress" class="msg"></div>
+<label>Automatic updates: manifest URL (optional)</label>
+<input id="fw-url" placeholder="leave blank to turn automatic updates off">
+<p class="leg-summary">Checked once per refresh, over https only. The board
+only installs an image whose SHA-256 matches the manifest, and skips the
+check below 50% battery unless it's plugged in.</p>
+<button onclick="saveOtaUrl()">Save URL</button>
+<button onclick="finishSettings()">Done</button>
+<div id="fw-msg" class="msg"></div>
 </section>
 
 <section id="step-done">
@@ -644,17 +669,70 @@ function saveBusWifi(){
   setMsg('buswifi-msg','Saving...','');
   fetch('/setbuswifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:payload})
     .then(function(r){return r.json();}).then(function(res){
-      if(res.ok){ finishSettings(); }
+      if(res.ok){ showStep('step-firmware'); }
       else { setMsg('buswifi-msg',res.message||'Could not save.','err'); }
     }).catch(function(){ setMsg('buswifi-msg','Could not reach the board. Try again.','err'); });
 }
 
+function loadFirmwareInfo(){
+  fetch('/fwinfo').then(function(r){return r.json();}).then(function(res){
+    el('fw-version').textContent = res.version || 'unknown';
+    el('fw-partition').textContent = res.partition || 'unknown';
+    el('fw-url').value = res.otaUrl || '';
+    if(res.trial){
+      el('fw-trial').textContent = 'This build ('+res.trial+') is on trial. '
+        + 'It is kept once the board completes one full update cycle.';
+    }
+  }).catch(function(){});
+}
+function saveOtaUrl(){
+  setMsg('fw-msg','Saving...','');
+  fetch('/setotaurl',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'url='+encodeURIComponent(el('fw-url').value.trim())})
+    .then(function(r){return r.json();}).then(function(res){
+      setMsg('fw-msg', res.ok ? 'Saved.' : (res.message||'Could not save.'), res.ok?'ok':'err');
+    }).catch(function(){ setMsg('fw-msg','Could not reach the board.','err'); });
+}
+function uploadFirmware(){
+  var f = el('fw-file').files[0];
+  if(!f){ setMsg('fw-msg','Choose a .bin file first.','err'); return; }
+  var form = new FormData();
+  form.append('firmware', f);
+  // XMLHttpRequest rather than fetch(): fetch has no upload-progress event,
+  // and a 1.4 MB image over SoftAP takes long enough that a page with no
+  // feedback looks broken.
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST','/firmware');
+  xhr.upload.onprogress = function(e){
+    if(!e.lengthComputable) return;
+    setMsg('fw-progress', Math.round(e.loaded*100/e.total)+'% uploaded', '');
+  };
+  xhr.onload = function(){
+    var res = {};
+    try { res = JSON.parse(xhr.responseText); } catch(err) {}
+    if(xhr.status===200 && res.ok){
+      setMsg('fw-progress','','');
+      setMsg('fw-msg', res.message || 'Installed. Rebooting.', 'ok');
+    } else {
+      setMsg('fw-progress','','');
+      setMsg('fw-msg', res.message || 'Install failed.', 'err');
+    }
+  };
+  // The board reboots the moment it answers, so a dropped connection right
+  // at the end is the expected outcome of a success, not an error worth
+  // alarming anyone about.
+  xhr.onerror = function(){ setMsg('fw-msg','Connection closed - if the board rebooted, it worked.',''); };
+  setMsg('fw-msg','','');
+  setMsg('fw-progress','Uploading...','');
+  xhr.send(form);
+}
 function finishSettings(){
   fetch('/settingsdone',{method:'POST'}).catch(function(){});
   showStep('step-done');
 }
 
 loadPresets();
+loadFirmwareInfo();
 </script>
 </body></html>
 )HTML";
@@ -692,6 +770,15 @@ void SetupFlow::startPortal() {
   server_.on("/getbuswifi", HTTP_GET, [this]() { handleGetBusWifi(); });
   server_.on("/setbuswifi", HTTP_POST, [this]() { handleSetBusWifi(); });
   server_.on("/settingsdone", HTTP_POST, [this]() { handleSettingsDone(); });
+  server_.on("/fwinfo", HTTP_GET, [this]() { handleFirmwareInfo(); });
+  server_.on("/setotaurl", HTTP_POST, [this]() { handleSetOtaUrl(); });
+  // Two callbacks, not one: WebServer calls the fourth argument repeatedly
+  // as the multipart body streams in, and the third once the whole request
+  // has been read. The image is written through to flash in the former,
+  // because it is far larger than the heap this board has.
+  server_.on(
+      "/firmware", HTTP_POST, [this]() { handleFirmwareUploadDone(); },
+      [this]() { handleFirmwareUpload(); });
 
   // Common captive-portal probe URLs (Android/Chrome, iOS/macOS, Windows) —
   // redirecting these to "/" is what makes phones auto-open the portal
@@ -1227,6 +1314,124 @@ void SetupFlow::handleStopSelect() {
   std::string body;
   serializeJson(doc, body);
   server_.send(200, "application/json", body.c_str());
+}
+
+// --- firmware update ------------------------------------------------------
+
+void SetupFlow::handleFirmwareInfo() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+
+  const OtaTrialState trial = configStore_.otaTrialState();
+  JsonDocument doc;
+  doc["version"] = FREEINK_FW_VERSION;
+  doc["partition"] = runningPartitionLabel();
+  doc["otaUrl"] = configStore_.otaManifestUrl();
+  doc["trial"] = trial.pendingVersion;
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
+
+void SetupFlow::handleSetOtaUrl() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+
+  const std::string url = server_.hasArg("url") ? server_.arg("url").c_str() : "";
+  // Empty is the "turn the pull path off" value and is always allowed. A
+  // non-empty value must be https for the same reason parseOtaManifest()
+  // insists on it: a manifest fetched over plain http can be replaced in
+  // flight, and the digest it carries is then worth nothing.
+  if (!url.empty() && url.rfind("https://", 0) != 0) {
+    server_.send(400, "application/json",
+                 "{\"ok\":false,\"message\":\"Must start with https://\"}");
+    return;
+  }
+  configStore_.setOtaManifestUrl(url);
+  settingsSaved_ = true;
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void SetupFlow::handleFirmwareUpload() {
+  HTTPUpload& upload = server_.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    touchActivity();
+    firmwareUploadOk_ = false;
+    firmwareUploadError_.clear();
+    // requireSettingsMode() sends its own 403, which would be wrong here --
+    // this callback has no response of its own, and sending one mid-upload
+    // would collide with handleFirmwareUploadDone()'s. Record the refusal
+    // and let that handler report it.
+    if (portalMode_ != PortalMode::kSettings) {
+      firmwareUploadError_ = "Not available.";
+      return;
+    }
+    // UPDATE_SIZE_UNKNOWN: a browser upload carries no trustworthy length
+    // up front, so the partition size is the only bound, and Update
+    // enforces it per-write.
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+      firmwareUploadError_ = Update.errorString();
+      return;
+    }
+    firmwareUploadOk_ = true;
+    return;
+  }
+
+  if (!firmwareUploadOk_) return;  // already failed; drain the rest quietly
+
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    touchActivity();  // a 1.4 MB upload takes longer than the portal's idle timeout
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      firmwareUploadOk_ = false;
+      firmwareUploadError_ = Update.errorString();
+      Update.abort();
+    }
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_END) {
+    if (!Update.end(true)) {
+      firmwareUploadOk_ = false;
+      firmwareUploadError_ = Update.errorString();
+    }
+    return;
+  }
+
+  if (upload.status == UPLOAD_FILE_ABORTED) {
+    // A browser tab closed mid-upload leaves a half-written partition. It
+    // is not the running one, so nothing breaks -- but it must not be left
+    // marked bootable.
+    firmwareUploadOk_ = false;
+    firmwareUploadError_ = "Upload aborted.";
+    Update.abort();
+  }
+}
+
+void SetupFlow::handleFirmwareUploadDone() {
+  if (!firmwareUploadOk_) {
+    JsonDocument doc;
+    doc["ok"] = false;
+    doc["message"] =
+        firmwareUploadError_.empty() ? std::string("Upload failed.") : firmwareUploadError_;
+    std::string body;
+    serializeJson(doc, body);
+    server_.send(500, "application/json", body.c_str());
+    return;
+  }
+
+  // Armed even though a human is standing in front of the board: the whole
+  // point of the trial is that an image can be intact and still not work,
+  // and an uploaded build is no more proven than a downloaded one. See
+  // ota_update.h.
+  configStore_.setOtaTrialState(otaTrialStateForNewImage("portal-upload"));
+  settingsSaved_ = true;
+  server_.send(200, "application/json",
+               "{\"ok\":true,\"message\":\"Installed. Rebooting into it now.\"}");
+  // Give the response time onto the wire before the radio goes away with
+  // the rest of the chip.
+  delay(500);
+  ESP.restart();
 }
 
 void SetupFlow::handleCaptiveRedirect() {

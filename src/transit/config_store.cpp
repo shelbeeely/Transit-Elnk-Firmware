@@ -246,6 +246,39 @@ void ConfigStore::setBusPortalFieldName(const std::string& fieldName) {
   backend_.setString("bus_form_fld", fieldName);
 }
 
+std::string ConfigStore::otaManifestUrl() { return backend_.getString("ota_url", ""); }
+void ConfigStore::setOtaManifestUrl(const std::string& url) { backend_.setString("ota_url", url); }
+
+OtaTrialState ConfigStore::otaTrialState() {
+  OtaTrialState state;
+  state.pendingVersion = backend_.getString("ota_pend_ver", "");
+  state.bootsAttempted = backend_.getInt("ota_pend_n", 0);
+  return state;
+}
+
+void ConfigStore::setOtaTrialState(const OtaTrialState& state) {
+  backend_.setString("ota_pend_ver", state.pendingVersion);
+  backend_.setInt("ota_pend_n", state.bootsAttempted);
+}
+
+int ConfigStore::otaConsecutiveFailures() { return backend_.getInt("ota_fails", 0); }
+
+std::string ConfigStore::otaFailingVersion() { return backend_.getString("ota_fail_ver", ""); }
+
+void ConfigStore::recordOtaFailure(const std::string& version) {
+  // The count restarts whenever the version being attempted changes: three
+  // failures on yesterday's image say nothing about today's, and letting
+  // them carry over would block the very build that fixes them.
+  const int previous = version == otaFailingVersion() ? otaConsecutiveFailures() : 0;
+  backend_.setString("ota_fail_ver", version);
+  backend_.setInt("ota_fails", previous + 1);
+}
+
+void ConfigStore::clearOtaFailures() {
+  backend_.setInt("ota_fails", 0);
+  backend_.setString("ota_fail_ver", "");
+}
+
 std::string ConfigStore::cachedBoard() { return backend_.getString("cached_board", ""); }
 void ConfigStore::setCachedBoard(const std::string& blob) { backend_.setString("cached_board", blob); }
 

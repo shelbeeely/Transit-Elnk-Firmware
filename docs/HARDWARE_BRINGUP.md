@@ -283,11 +283,13 @@ type into the console.
 
 ### What isn't set up, and what it would take
 
-- **OTA updates.** `partitions.csv` already has the layout for it — dual
-  6.3 MB OTA slots (`ota_0` at `0x10000`, `ota_1` at `0x650000`) plus
-  `otadata` — but **no OTA code exists** in this firmware. Adding it would
-  remove the cable from the iteration loop after the first flash. It is the
-  obvious next thing if you end up reflashing a lot; say the word.
+- **OTA updates — now built.** After this first cable flash, the cable is
+  optional: hold the power button, open the settings portal, and drop a
+  `.bin` on its Firmware step, or point the board at a manifest URL and let
+  it update itself once per wake. See
+  [`docs/OTA_UPDATES.md`](OTA_UPDATES.md) for the safety gates (battery
+  floor, SHA-256, and the trial-boot rollback that puts the old image back
+  if a new one can't complete a cycle).
 - **Hardware-in-the-loop CI.** A self-hosted GitHub Actions runner with the
   board attached could run `pio run -t upload` and capture serial into the
   job log on every push — which a cloud session *can* read, via the Actions

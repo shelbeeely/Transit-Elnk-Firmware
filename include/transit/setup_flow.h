@@ -162,6 +162,25 @@ class SetupFlow {
   // first individual setting is saved.
   void handleSettingsDone();
 
+  // --- firmware update (ota_update.h) ------------------------------------
+  //
+  // The push half of OTA. The pull half runs once per wake and is main.cpp's
+  // business; this is the path for a board on your desk, and it lives here
+  // because the settings portal is the only time this firmware is awake and
+  // serving HTTP for longer than a few seconds -- see ota_update.h's file
+  // comment on why the usual always-on ArduinoOTA shape doesn't fit a board
+  // that sleeps 99.75% of the time.
+  void handleFirmwareInfo();
+  void handleSetOtaUrl();
+  // Called once per multipart chunk as the browser streams the .bin up, so
+  // a 1.4 MB image never has to exist in RAM at once (there is nowhere near
+  // enough heap for that). Writes straight through to the inactive OTA
+  // partition.
+  void handleFirmwareUpload();
+  // Called after the upload finishes: sends the verdict and, on success,
+  // arms the trial-boot rollback and reboots into the new image.
+  void handleFirmwareUploadDone();
+
   void handleCaptiveRedirect();
   void handleNotFound();
 
@@ -202,6 +221,13 @@ class SetupFlow {
   // Cached between POST /stopsearch and POST /stopselect (the page refers
   // back to a search result by index rather than resending the full stop).
   std::vector<SearchStopResult> lastStopResults_;
+
+  // Carried across the many calls to handleFirmwareUpload() that make up one
+  // upload. Once a chunk fails there is no point writing the rest, and the
+  // reason has to survive until handleFirmwareUploadDone() can report it --
+  // the chunk handler has no response of its own to fail with.
+  bool firmwareUploadOk_ = false;
+  std::string firmwareUploadError_;
 };
 
 }  // namespace transit

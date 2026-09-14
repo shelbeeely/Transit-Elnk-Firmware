@@ -116,6 +116,28 @@ void test_boot_report_hides_sd_table_detail_when_no_card_mounted() {
   TEST_ASSERT_TRUE(contains(text, "sd stop_times table"));
 }
 
+void test_boot_report_shows_the_ota_trial_only_while_it_applies() {
+  BootReport report;
+  report.otaPartition = "app0";
+  TEST_ASSERT_FALSE(contains(formatBootReport(report), "ON TRIAL"));
+
+  report.otaTrialVersion = "v2";
+  report.otaTrialBoots = 2;
+  const std::string text = formatBootReport(report);
+  // "why did my board revert" is unanswerable unless the trial is visible
+  // in the log while it is happening.
+  TEST_ASSERT_TRUE(contains(text, "ON TRIAL"));
+  TEST_ASSERT_TRUE(contains(text, "v2 (boot 2)"));
+}
+
+void test_wake_summary_omits_the_ota_block_when_no_check_ran() {
+  WakeSummary summary;  // no network, so the check never happened
+  TEST_ASSERT_FALSE(contains(formatWakeSummary(summary), "decision"));
+
+  summary.otaDecision = "already current";
+  TEST_ASSERT_TRUE(contains(formatWakeSummary(summary), "already current"));
+}
+
 void test_wake_summary_reports_which_source_won() {
   WakeSummary summary;
   summary.departureSource = "cached";
@@ -185,6 +207,8 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_boot_report_distinguishes_unread_from_zero);
   RUN_TEST(test_boot_report_reports_disabled_sleep_window_as_off);
   RUN_TEST(test_boot_report_hides_sd_table_detail_when_no_card_mounted);
+  RUN_TEST(test_boot_report_shows_the_ota_trial_only_while_it_applies);
+  RUN_TEST(test_wake_summary_omits_the_ota_block_when_no_check_ran);
   RUN_TEST(test_wake_summary_reports_which_source_won);
   RUN_TEST(test_wake_summary_omits_cache_age_when_unknown);
   RUN_TEST(test_wake_summary_marks_a_fetch_that_never_ran);

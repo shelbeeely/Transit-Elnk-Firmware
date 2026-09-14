@@ -59,6 +59,15 @@ STUB_ROUTES = {
         "transferBufferMin": 3,
     },
     "/getbuswifi": {"ssid": "STA-WiFi", "identity": "rider@example.com", "submitUrl": "", "fieldName": ""},
+    # A plausible `git describe` output and a real OTA slot label -- the
+    # Firmware step's whole job is telling you which build is running, so a
+    # placeholder version here would make the screenshot say nothing.
+    "/fwinfo": {
+        "version": "v0.1.0-14-g2736ac3",
+        "partition": "app0",
+        "otaUrl": "https://github.com/shelbeeely/Transit-Elnk-Firmware/releases/latest/download/manifest.json",
+        "trial": "",
+    },
     "/stopsearch": {
         "ok": True,
         "results": [
@@ -221,6 +230,8 @@ def main() -> None:
         """)
         shoot(page2, out_dir, "portal_settings_buswifi", "step-buswifi",
               "gotoBusWifi();")
+        shoot(page2, out_dir, "portal_settings_firmware", "step-firmware",
+              "loadFirmwareInfo();")
         shoot(page2, out_dir, "portal_settings_done", "step-done")
 
         browser.close()

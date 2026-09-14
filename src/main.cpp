@@ -29,12 +29,14 @@
 
 #include "transit/api_client.h"
 #include "transit/boot_report.h"
+#include "transit/build_info.h"
 #include "transit/captive_portal.h"
 #include "transit/config_store.h"
 #include "transit/http_transport.h"
 #include "transit/icon_cache.h"
 #include "transit/local_time.h"
 #include "transit/offline_cache.h"
+#include "transit/ota_update.h"
 #include "transit/power_scheduler.h"
 #include "transit/render_engine.h"
 #include "transit/setup_flow.h"
@@ -45,20 +47,6 @@
 #include "transit/time_keeper.h"
 #include "transit/trip_planner.h"
 #include "transit/ui_logic.h"
-
-// Supplied by platformio.ini (and, for the version, tools/pio_version.py
-// off `git describe`). Defaulted here so the file still compiles if someone
-// builds it outside this project's envs -- an unversioned build reports
-// itself as such rather than failing to compile.
-#ifndef FREEINK_FW_VERSION
-#define FREEINK_FW_VERSION "unversioned"
-#endif
-#ifndef FREEINK_BUILD_ENV
-#define FREEINK_BUILD_ENV "unknown"
-#endif
-#ifndef FREEINK_BRINGUP
-#define FREEINK_BRINGUP 0
-#endif
 
 using namespace transit;
 
@@ -428,6 +416,13 @@ BootReport gatherBootReport() {
   report.cachedBoardPresent = !cached.empty();
   report.cachedBoardBytes = cached.size();
 
+  report.otaPartition = runningPartitionLabel();
+  report.otaPullConfigured = !g_configStore.otaManifestUrl().empty();
+  const OtaTrialState trial = g_configStore.otaTrialState();
+  report.otaTrialVersion = trial.pendingVersion;
+  report.otaTrialBoots = trial.bootsAttempted;
+  report.otaConsecutiveFailures = g_configStore.otaConsecutiveFailures();
+
   const ApproxClockState clock = loadApproxClock();
   report.approxClockValid = clock.valid;
   if (clock.valid) {
@@ -445,6 +440,112 @@ void printIfSerial(const std::string& text) {
   if (!Serial) return;
   Serial.print(text.c_str());
   Serial.flush();
+}
+
+// ---------------------------------------------------------------------------
+// OTA (ota_update.h)
+// ---------------------------------------------------------------------------
+
+// Runs before anything that could panic. See the call site in setup() for
+// why the trial counter is written at the front of the boot rather than at
+// the end of the cycle.
+void handleOtaTrialBoot() {
+  const OtaTrialState trial = g_configStore.otaTrialState();
+  switch (evaluateOtaTrialBoot(trial)) {
+    case OtaTrialAction::kNothingPending:
+      return;
+    case OtaTrialAction::kContinueTrial:
+      g_configStore.setOtaTrialState(otaTrialStateAfterBoot(trial));
+      return;
+    case OtaTrialAction::kRollBack: {
+      std::string error;
+      const bool rolledBack = rollBackToPreviousSlot(error);
+      // Cleared either way. If the rollback worked, the trial is over; if it
+      // didn't -- a board whose other slot has never been written -- leaving
+      // the state set would re-attempt an impossible rollback on every
+      // single boot forever, and the image, bad as it is, is the only one
+      // there is. Say so loudly instead.
+      g_configStore.setOtaTrialState(OtaTrialState{});
+      if (Serial) {
+        Serial.printf("[ota] %s failed %d trial boots; rollback %s%s%s\n",
+                      trial.pendingVersion.c_str(), trial.bootsAttempted,
+                      rolledBack ? "succeeded, rebooting" : "FAILED: ",
+                      rolledBack ? "" : error.c_str(), "");
+        Serial.flush();
+      }
+      if (rolledBack) {
+        delay(100);
+        ESP.restart();
+      }
+      return;
+    }
+  }
+}
+
+void reportOtaProgress(size_t written, size_t total) {
+  if (!Serial) return;
+  Serial.printf("[ota] %u / %u bytes (%u%%)\n", static_cast<unsigned>(written),
+                static_cast<unsigned>(total),
+                total == 0 ? 0u : static_cast<unsigned>((written * 100) / total));
+}
+
+// The pull path: ask the configured manifest whether a newer build exists
+// and install it if every gate in decideOtaUpdate() agrees. Returns true
+// when an image was installed and the caller should reboot into it rather
+// than sleeping.
+bool runOtaCheck(WakeSummary& summary) {
+  const std::string manifestUrl = g_configStore.otaManifestUrl();
+
+  OtaGateInputs gate;
+  gate.manifestConfigured = !manifestUrl.empty();
+  gate.runningVersion = FREEINK_FW_VERSION;
+  gate.consecutiveFailures = g_configStore.otaConsecutiveFailures();
+  gate.failingVersion = g_configStore.otaFailingVersion();
+
+  BatteryMonitor batteryMonitor;
+  const BatteryMonitor::Status battery = batteryMonitor.readStatus();
+  if (battery.supported && battery.percentageKnown) {
+    gate.batteryPercent = static_cast<int>(battery.percentage);
+  }
+  // Charging and "externally powered" are treated the same here: either way
+  // the supply is not about to disappear mid-erase, which is the only thing
+  // the battery gate is protecting against.
+  gate.externalPower = (battery.externalPowerKnown && battery.externalPower) ||
+                       (battery.chargingKnown && battery.charging);
+
+  if (gate.manifestConfigured) {
+    // Small JSON, so the buffering HttpTransport is fine here -- unlike the
+    // image itself, which applyOtaFromUrl() streams for exactly that reason.
+    const HttpResponse response = g_httpTransport.get(manifestUrl, {});
+    if (response.transportOk && response.statusCode == 200) {
+      gate.manifestFetched = parseOtaManifest(response.body, gate.manifest);
+    }
+  }
+
+  const OtaDecision decision = decideOtaUpdate(gate);
+  summary.otaDecision = otaDecisionName(decision);
+  if (gate.manifestFetched) summary.otaAvailableVersion = gate.manifest.version;
+  if (decision != OtaDecision::kProceed) return false;
+
+  if (Serial) {
+    Serial.printf("[ota] installing %s (%lld bytes) from %s\n", gate.manifest.version.c_str(),
+                  static_cast<long long>(gate.manifest.sizeBytes), gate.manifest.url.c_str());
+    Serial.flush();
+  }
+
+  const OtaApplyResult result = applyOtaFromUrl(gate.manifest, &reportOtaProgress);
+  if (!result.ok) {
+    summary.otaError = result.error;
+    g_configStore.recordOtaFailure(gate.manifest.version);
+    return false;
+  }
+
+  g_configStore.clearOtaFailures();
+  // Written before the reboot, so the next boot knows it is on trial even
+  // if it panics immediately.
+  g_configStore.setOtaTrialState(otaTrialStateForNewImage(gate.manifest.version));
+  summary.otaApplied = true;
+  return true;
 }
 
 #if FREEINK_BRINGUP
@@ -678,6 +779,16 @@ void setup() {
 
   BoardConfig::holdPowerRails();
   BoardConfig::selectDevice(BoardConfig::Board::XteinkX4);
+
+  // Before the SD mount, the panel, the radio -- before anything that could
+  // panic. A freshly-installed image is "on trial" until it completes one
+  // whole wake cycle; the count is written here, at the front, precisely so
+  // that an image which crashes before it can write anything still burns a
+  // trial. Counting at the end instead would let a boot-looping image
+  // retry forever, which is the failure this exists to prevent.
+  // See ota_update.h.
+  handleOtaTrialBoot();
+
   bool enterSettingsRequested = waitForBootButtonAndCheckSettingsHold();
 
   // Must run before g_display.begin(): the X4 shares its SPI bus between
@@ -1048,6 +1159,31 @@ void setup() {
   summary.boardDirectionCount = static_cast<int>(board.size());
   for (const DirectionBoard& direction : board) {
     summary.boardDepartureCount += static_cast<int>(direction.departures.size());
+  }
+
+  // Firmware update check, deliberately AFTER the panel has been redrawn:
+  // an update that reboots the board mid-cycle must not cost the reader
+  // their departure board for the next hour. Wi-Fi is still up here.
+  if (wifiOk && runOtaCheck(summary)) {
+    summary.totalAwakeMs = millis();
+    if (Serial) printIfSerial(formatWakeSummary(summary));
+    delay(200);
+    // Not deep sleep: the whole point is to start running the image that
+    // was just installed. It comes up on trial (ota_update.h) and has to
+    // complete a cycle of its own before it is kept.
+    ESP.restart();
+  }
+
+  // The cycle completed, which is the only evidence this firmware has that a
+  // freshly-installed image actually works. Anything earlier would pass an
+  // image that boots and then fails at the thing it exists to do.
+  const OtaTrialState trialAtEnd = g_configStore.otaTrialState();
+  if (!trialAtEnd.pendingVersion.empty()) {
+    g_configStore.setOtaTrialState(otaTrialStateAfterSuccess(trialAtEnd));
+    if (Serial) {
+      Serial.printf("[ota] %s completed a full cycle on boot %d; keeping it\n",
+                    trialAtEnd.pendingVersion.c_str(), trialAtEnd.bootsAttempted);
+    }
   }
 
   SleepWindow sleepWindow;

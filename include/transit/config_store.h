@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "transit/local_time.h"
+#include "transit/ota_update.h"
 #include "transit/trip_planner.h"
 
 namespace transit {
@@ -201,6 +202,31 @@ class ConfigStore {
   // never by the settings portal.
   std::string cachedBoard();
   void setCachedBoard(const std::string& blob);
+
+  // --- OTA firmware updates (ota_update.h) --------------------------------
+  //
+  // URL of the update manifest to check once per wake. Empty (the default)
+  // = the pull path is off entirely and the board never reaches out for
+  // firmware. Settings-portal-only. Note that a board with this unset can
+  // still be updated by uploading a .bin through the settings portal --
+  // that path needs no configuration because you are standing in front of
+  // the board.
+  std::string otaManifestUrl();
+  void setOtaManifestUrl(const std::string& url);
+
+  // Software rollback bookkeeping (ota_update.h's OtaTrialState). Written by
+  // main.cpp at the very start of a boot, before anything that could panic,
+  // which is what makes a boot loop terminate rather than retry forever.
+  OtaTrialState otaTrialState();
+  void setOtaTrialState(const OtaTrialState& state);
+
+  // Consecutive download/verify failures, and the version they were against.
+  // Kept apart so a newly published build clears the backoff rather than
+  // inheriting the previous build's bad luck -- see decideOtaUpdate().
+  int otaConsecutiveFailures();
+  std::string otaFailingVersion();
+  void recordOtaFailure(const std::string& version);
+  void clearOtaFailures();
 
  private:
   ConfigBackend& backend_;

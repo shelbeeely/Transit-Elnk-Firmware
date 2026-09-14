@@ -135,6 +135,10 @@ void test_every_nvs_key_fits_the_fifteen_character_limit() {
   store.setBusPortalSubmitUrl("u");
   store.setBusPortalFieldName("f");
   store.setCachedBoard("c");
+  store.setOtaManifestUrl("u");
+  store.setOtaTrialState(transit::OtaTrialState{});
+  store.recordOtaFailure("v");
+  store.clearOtaFailures();
 
   for (const std::string& key : backend.writtenKeys()) {
     TEST_ASSERT_LESS_OR_EQUAL_size_t_MESSAGE(15, key.size(), key.c_str());
@@ -142,6 +146,48 @@ void test_every_nvs_key_fits_the_fifteen_character_limit() {
   // Sanity check that the loop above actually saw the keys, rather than
   // passing vacuously against an empty set.
   TEST_ASSERT_GREATER_THAN_size_t(20, backend.writtenKeys().size());
+}
+
+void test_ota_settings_default_off_and_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  // An empty manifest URL is what keeps the pull path off on a board nobody
+  // configured for it -- a default pointing anywhere would mean every board
+  // reaches out to a server on every wake.
+  TEST_ASSERT_TRUE(store.otaManifestUrl().empty());
+  store.setOtaManifestUrl("https://example.test/firmware.json");
+  TEST_ASSERT_EQUAL_STRING("https://example.test/firmware.json", store.otaManifestUrl().c_str());
+
+  TEST_ASSERT_TRUE(store.otaTrialState().pendingVersion.empty());
+  TEST_ASSERT_EQUAL_INT(0, store.otaTrialState().bootsAttempted);
+
+  transit::OtaTrialState trial;
+  trial.pendingVersion = "v2";
+  trial.bootsAttempted = 2;
+  store.setOtaTrialState(trial);
+  TEST_ASSERT_EQUAL_STRING("v2", store.otaTrialState().pendingVersion.c_str());
+  TEST_ASSERT_EQUAL_INT(2, store.otaTrialState().bootsAttempted);
+}
+
+void test_ota_failure_count_restarts_when_the_version_changes() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  store.recordOtaFailure("v2");
+  store.recordOtaFailure("v2");
+  TEST_ASSERT_EQUAL_INT(2, store.otaConsecutiveFailures());
+  TEST_ASSERT_EQUAL_STRING("v2", store.otaFailingVersion().c_str());
+
+  // A newly published build gets a clean slate: carrying v2's failures over
+  // would block the very build that fixes them.
+  store.recordOtaFailure("v3");
+  TEST_ASSERT_EQUAL_INT(1, store.otaConsecutiveFailures());
+  TEST_ASSERT_EQUAL_STRING("v3", store.otaFailingVersion().c_str());
+
+  store.clearOtaFailures();
+  TEST_ASSERT_EQUAL_INT(0, store.otaConsecutiveFailures());
+  TEST_ASSERT_TRUE(store.otaFailingVersion().empty());
 }
 
 }  // namespace
@@ -468,5 +514,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_bus_wifi_settings_empty_by_default_and_round_trip);
   RUN_TEST(test_cached_board_empty_by_default_and_round_trips_a_large_blob);
   RUN_TEST(test_every_nvs_key_fits_the_fifteen_character_limit);
+  RUN_TEST(test_ota_settings_default_off_and_round_trip);
+  RUN_TEST(test_ota_failure_count_restarts_when_the_version_changes);
   return UNITY_END();
 }

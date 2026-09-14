@@ -188,6 +188,19 @@ std::string formatBootReport(const BootReport& report) {
                                   ? humanBytes(report.cachedBoardBytes)
                                   : std::string("(none)"));
 
+  out += "[ota]\n";
+  out += line("running from", orPlaceholder(report.otaPartition, "(unknown)"));
+  out += line("pull configured", report.otaPullConfigured);
+  if (!report.otaTrialVersion.empty()) {
+    // Only printed while it applies. A permanent "on trial: no" line would
+    // be noise on every boot of every board that has never updated.
+    out += line("ON TRIAL", report.otaTrialVersion + " (boot " +
+                                std::to_string(report.otaTrialBoots) + ")");
+  }
+  if (report.otaConsecutiveFailures > 0) {
+    out += line("recent failures", static_cast<long long>(report.otaConsecutiveFailures));
+  }
+
   out += "[clock]\n";
   out += line("carried across sleep", report.approxClockValid);
   if (report.approxClockValid) {
@@ -243,6 +256,19 @@ std::string formatWakeSummary(const WakeSummary& summary) {
   out += line("awake total", formatMillis(summary.totalAwakeMs));
   out += optionalLine("battery", summary.batteryPercent, " %");
   out += line("next wake", std::to_string(summary.nextWakeMin) + " min");
+
+  // Omitted entirely when the cycle never got as far as checking -- an
+  // "ota: not configured" line on a wake that had no network would be
+  // answering a question that was never asked.
+  if (!summary.otaDecision.empty()) {
+    out += "[ota]\n";
+    out += line("decision", summary.otaDecision);
+    if (!summary.otaAvailableVersion.empty()) {
+      out += line("available", summary.otaAvailableVersion);
+    }
+    if (summary.otaApplied) out += line("applied", "yes -- rebooting into it");
+    if (!summary.otaError.empty()) out += line("error", summary.otaError);
+  }
 
   out += "------------------------------\n";
   return out;

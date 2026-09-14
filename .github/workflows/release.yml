@@ -1,0 +1,95 @@
+name: Release firmware
+
+# Publishes a firmware image and the manifest the board's OTA pull path
+# reads (docs/OTA_UPDATES.md). Tag-driven, because a version is exactly what
+# a tag is -- tools/pio_version.py runs `git describe` at build time, so the
+# FREEINK_FW_VERSION baked into the image is the tag itself, and the
+# manifest's "version" field can be compared against it directly.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Point a board's settings-portal manifest URL at
+#   https://github.com/<owner>/<repo>/releases/latest/download/manifest.json
+# and it picks up every subsequent release on its own.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # tools/pio_version.py runs `git describe --tags`, which needs the
+          # tags and enough history to reach them; the default shallow
+          # checkout has neither and would bake in a bare commit sha.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build firmware
+        run: pio run -e xteink_x4
+
+      - name: Assemble the release artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp .pio/build/xteink_x4/firmware.bin release/firmware.bin
+
+          VERSION="${GITHUB_REF_NAME}"
+          SHA256=$(sha256sum release/firmware.bin | cut -d' ' -f1)
+          SIZE=$(stat -c%s release/firmware.bin)
+
+          # The board refuses a manifest whose sha256 isn't 64 lowercase hex
+          # characters, whose url isn't https, or whose size is missing --
+          # see parseOtaManifest(). Generating all three here rather than by
+          # hand is the point of this step.
+          cat > release/manifest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/firmware.bin",
+            "sha256": "${SHA256}",
+            "size": ${SIZE},
+            "notes": "Built from ${GITHUB_SHA}"
+          }
+          JSON
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
+
+          # A build that outgrew its OTA slot cannot be installed over the
+          # air at all, and failing here is far better than publishing a
+          # release every board will reject one megabyte into the download.
+          if [ "${SIZE}" -gt $((0x640000)) ]; then
+            echo "firmware.bin is ${SIZE} bytes, larger than the 0x640000 OTA slot" >&2
+            exit 1
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            release/firmware.bin release/manifest.json \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Firmware \`${{ steps.artifacts.outputs.version }}\`, ${{ steps.artifacts.outputs.size }} bytes, sha256 \`${{ steps.artifacts.outputs.sha256 }}\`.
+
+          Install over the air by pointing the board's manifest URL at:
+          \`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/manifest.json\`
+
+          Or upload \`firmware.bin\` directly from the settings portal's Firmware step. See [docs/OTA_UPDATES.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/OTA_UPDATES.md)."

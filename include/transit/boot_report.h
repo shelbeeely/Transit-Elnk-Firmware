@@ -114,6 +114,17 @@ struct BootReport {
   bool cachedBoardPresent = false;
   size_t cachedBoardBytes = 0;
 
+  // --- OTA (ota_update.h) --------------------------------------------
+  // Which slot this image is running from, whether a pull URL is
+  // configured, and whether this boot is a freshly-installed image still on
+  // trial. The last one matters most in a log: "why did my board revert" is
+  // unanswerable unless the trial state is visible while it is happening.
+  std::string otaPartition;
+  bool otaPullConfigured = false;
+  std::string otaTrialVersion;  // empty = not on trial
+  int otaTrialBoots = 0;
+  int otaConsecutiveFailures = 0;
+
   // --- clock carried across deep sleep (time_keeper.h) ----------------
   bool approxClockValid = false;
   int64_t approxClockEpoch = 0;
@@ -164,6 +175,15 @@ struct WakeSummary {
   uint32_t renderMs = 0;
   uint32_t totalAwakeMs = 0;
   int nextWakeMin = 0;
+
+  // --- OTA (ota_update.h) --------------------------------------------
+  // otaDecision is otaDecisionName()'s string, so every wake says why it
+  // did or didn't update rather than silently doing nothing. Empty when the
+  // cycle never reached the check (no network).
+  std::string otaDecision;
+  std::string otaAvailableVersion;
+  bool otaApplied = false;
+  std::string otaError;
   int batteryPercent = -1;
 };
 
