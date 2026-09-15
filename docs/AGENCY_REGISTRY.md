@@ -79,19 +79,6 @@ it instead of a fixed STA-only flash table) is real, separate firmware
 work that hasn't happened yet — this registry is what that work will be
 driven by, not a promise that it already is.
 
-Two pieces of that work exist already, built ahead of having real data to
-feed them: `ConfigStore::secondSourceAgencies()` (`config_store.h`) is a
-list-of-agencies schema rather than the old single `sta_stop` string, and
-`RenderEngine`'s attribution footer (`render_engine.h`'s
-`BoardStatus::secondSourceAttributions`) draws a credit line above the
-"Powered by Transit" badge whenever an active agency's terms require one
-— see `docs/screenshots/departure_board_with_attribution.png`. Neither is
-wired to a real source yet: nothing currently sets more than one
-`ConfigStore` entry, and nothing populates `secondSourceAttributions` at
-all (STA's own `attribution_required` is `false`, so it wouldn't show
-anything regardless). Reading a real pack's manifest off the SD card into
-both is the next, still-unbuilt step.
-
 ## Requesting an agency
 
 Open a PR adding an entry to `agencies/registry.json`:
