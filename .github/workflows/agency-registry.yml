@@ -1,0 +1,38 @@
+name: Agency registry
+
+# Validates agencies/registry.json on every PR that touches it -- catches a
+# malformed or incomplete entry (a status=supported agency missing its
+# gtfs_rt block, a duplicate id, a plain-http URL, an unfilled placeholder
+# auth value) before it's merged, rather than when someone tries to build a
+# pack from it later. See docs/AGENCY_REGISTRY.md for what this registry is
+# (and isn't) and tools/validate_agency_registry.py for exactly what's
+# checked -- deliberately schema-plus-shape only, no outbound requests to
+# agency servers, so a third party having a bad minute can't fail an
+# unrelated contributor's CI.
+
+on:
+  pull_request:
+    paths:
+      - "agencies/**"
+      - "tools/validate_agency_registry.py"
+      - ".github/workflows/agency-registry.yml"
+  push:
+    branches: [main]
+    paths:
+      - "agencies/**"
+      - "tools/validate_agency_registry.py"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install jsonschema
+
+      - run: python3 tools/validate_agency_registry.py

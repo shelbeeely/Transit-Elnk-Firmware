@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shelbeeely.github.io/Transit-Elnk-Firmware/agencies/registry.schema.json",
+  "title": "Transit-Elnk-Firmware agency registry",
+  "description": "Tracks agencies with (or requested for) the OPTIONAL second data source and offline static timetable -- see docs/AGENCY_REGISTRY.md. This is not a list of agencies the board works with: live departures via the Transit API already cover most agencies with zero entries here (docs/DEPLOYMENT_OPS.md). An entry only exists for the STA-shaped bonus tier.",
+  "type": "object",
+  "required": ["agencies"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor-tooling convenience only, pointing back at this file -- not a schema keyword here, just a regular (and permitted) property on the instance document."
+    },
+    "agencies": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/agency" }
+    }
+  },
+  "$defs": {
+    "agency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "region", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Short, stable, lowercase slug -- used as a filename/identifier once the firmware consumes this registry, so treat it as an API, not a label.",
+          "pattern": "^[a-z][a-z0-9-]{1,31}$"
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "\"City, State/Province, Country\" -- enough for a human scanning the list to recognize their own agency."
+        },
+        "website": { "type": "string", "format": "uri" },
+        "status": {
+          "type": "string",
+          "enum": ["requested", "supported"],
+          "description": "requested: someone wants this agency added, no technical fields yet -- see docs/AGENCY_REGISTRY.md's low-friction path. supported: the fields below have been worked out and reviewed, same bar as docs/STA_INTEGRATION.md."
+        },
+        "requested_by": {
+          "type": "string",
+          "description": "GitHub username, for a requested entry -- so a contributor picking this up has someone to loop in."
+        },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "gtfs_rt": { "$ref": "#/$defs/gtfsRt" },
+        "gtfs_static_source": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Where the static route/stop/trip data actually comes from -- not necessarily the agency's own site (see STA's own entry: its static feed sits behind the same protection as its live one, so this project reads a public GTFS mirror instead)."
+        },
+        "stop_code_convention": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "What a rider actually has to type into the settings portal to identify a stop for this agency (STA: the numeric code printed on the physical sign)."
+        },
+        "offline_timetable_supported": {
+          "type": "boolean",
+          "description": "Whether the SD-card static-timetable fallback (docs/OFFLINE_AND_BUS_WIFI.md) has been generated/tested for this agency, not just the live second source."
+        },
+        "docs": {
+          "type": "string",
+          "description": "Path to this agency's own writeup, e.g. docs/STA_INTEGRATION.md -- required for status=supported, same depth (compliance/terms-of-use review included) as that file."
+        },
+        "maintainer": {
+          "type": "string",
+          "description": "GitHub username of whoever did the integration work and can answer questions about it."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "supported" } }, "required": ["status"] },
+          "then": {
+            "required": ["gtfs_rt", "gtfs_static_source", "stop_code_convention", "docs", "maintainer"]
+          }
+        }
+      ]
+    },
+    "gtfsRt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trip_updates_url", "protocol"],
+      "properties": {
+        "trip_updates_url": { "type": "string", "format": "uri" },
+        "protocol": {
+          "type": "string",
+          "enum": ["gtfs_rt_protobuf"],
+          "description": "The only shape the firmware's decoder (sta_feed_parser.h, being generalized) can actually read today. An agency that only offers a OneBusAway-style JSON API instead of raw GTFS-RT protobuf isn't supportable yet -- file it as status=requested with a note, not supported."
+        },
+        "auth_header_name": { "type": "string", "maxLength": 100 },
+        "auth_header_value": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Only for a key that's already effectively public (like STA's, published in their own OneBusAway config -- see docs/STA_INTEGRATION.md's Compliance section). Never a private credential -- root CLAUDE.md's rules against committing real keys apply here too."
+        },
+        "notes": { "type": "string", "maxLength": 1000 }
+      }
+    }
+  }
+}

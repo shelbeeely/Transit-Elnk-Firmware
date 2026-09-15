@@ -10,6 +10,7 @@ on:
     paths:
       - 'site/**'
       - 'docs/screenshots/**'
+      - 'agencies/registry.json'
       - 'tools/build_site.sh'
       - '.github/workflows/pages.yml'
   # So the site can be republished without a content change (e.g. after
