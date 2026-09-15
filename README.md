@@ -1,5 +1,13 @@
 # Transit-Elnk-Firmware
 
+[![Pages](https://github.com/shelbeeely/Transit-Elnk-Firmware/actions/workflows/pages.yml/badge.svg)](https://github.com/shelbeeely/Transit-Elnk-Firmware/actions/workflows/pages.yml)
+
+### [View the transit-elnk product site &rarr;](https://shelbeeely.github.io/Transit-Elnk-Firmware/)
+The features, the offline story, the full setup walkthrough, and every
+screenshot in one place — built from this repo's own `site/` directory and
+published by [`pages.yml`](.github/workflows/pages.yml) on every push to
+`main` that touches it (see [Project layout](#project-layout)).
+
 ESP32 firmware for the Xteink X4 (800×480, 4-gray e-ink) that shows next
 transit departures for a stop — the same job as the Transit app's main
 screen, and of the Transit-NearbyWebWidget / Transit-TV reference apps,
@@ -8,10 +16,6 @@ timer, fetches departures, draws the board, and deep-sleeps.
 
 Built on the [FreeInk SDK](https://github.com/Free-Ink/freeink-sdk)
 (vendored as a git submodule at `freeink-sdk/`) and PlatformIO/Arduino-ESP32.
-
-**[transit-elnk product site &rarr;](https://shelbeeely.github.io/Transit-Elnk-Firmware/)** — the
-features, the offline story, the full setup walkthrough, and every screenshot
-in one place.
 
 ## What it looks like
 
