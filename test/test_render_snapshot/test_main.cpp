@@ -440,6 +440,92 @@ void test_departure_board_with_preset_trips_shows_strip_above_footer() {
 // still presents exactly once, using the sample board's mix (including the
 // one direction with no upcoming departures, which selectFocusBoards()
 // must skip rather than crash on -- see render_engine.cpp's comment).
+// BoardStatus::secondSourceAttributions (render_engine.h): empty (the
+// default -- STA's own case, since its terms don't require this) must
+// never change the rendered frame, same convention/test shape as
+// test_empty_preset_trips_matches_baseline_layout above.
+void test_empty_second_source_attributions_matches_baseline_layout() {
+  transit_test::HostRasterTarget targetA(kScreenWidth, kScreenHeight);
+  NoopPresenter presenterA;
+  FakeHttpTransport transportA;
+  IconCache iconCacheA(transportA);
+  RenderEngine engineA(targetA, presenterA, iconCacheA, kScreenWidth, kScreenHeight);
+  engineA.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+
+  transit_test::HostRasterTarget targetB(kScreenWidth, kScreenHeight);
+  NoopPresenter presenterB;
+  FakeHttpTransport transportB;
+  IconCache iconCacheB(transportB);
+  RenderEngine engineB(targetB, presenterB, iconCacheB, kScreenWidth, kScreenHeight);
+  BoardStatus statusB = makeSampleStatus();
+  statusB.secondSourceAttributions.clear();  // explicit, though already empty by default
+  engineB.renderDepartureBoard(makeSampleBoard(), statusB);
+
+  TEST_ASSERT_TRUE_MESSAGE(targetA.pixels() == targetB.pixels(),
+                           "empty secondSourceAttributions should never change the rendered frame");
+}
+
+// A non-empty entry should add a visible credit line above the Transit
+// badge, and multiple entries should join into one line (more ink than a
+// single entry alone) rather than each getting their own line -- see
+// joinAttributions()'s comment on why the footer grows by a fixed amount
+// regardless of how many agencies are active.
+void test_second_source_attribution_adds_visible_line_above_badge() {
+  transit_test::HostRasterTarget baseline(kScreenWidth, kScreenHeight);
+  {
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(baseline, presenter, iconCache, kScreenWidth, kScreenHeight);
+    engine.renderDepartureBoard(makeSampleBoard(), makeSampleStatus());
+  }
+
+  transit_test::HostRasterTarget singleTarget(kScreenWidth, kScreenHeight);
+  {
+    NoopPresenter presenter;
+    FakeHttpTransport transport;
+    IconCache iconCache(transport);
+    RenderEngine engine(singleTarget, presenter, iconCache, kScreenWidth, kScreenHeight);
+    BoardStatus status = makeSampleStatus();
+    status.secondSourceAttributions = {"Data provided by Example Transit"};
+    engine.renderDepartureBoard(makeSampleBoard(), status);
+  }
+
+  transit_test::HostRasterTarget doubleTarget(kScreenWidth, kScreenHeight);
+  NoopPresenter doublePresenter;
+  FakeHttpTransport doubleTransport;
+  IconCache doubleIconCache(doubleTransport);
+  RenderEngine doubleEngine(doubleTarget, doublePresenter, doubleIconCache, kScreenWidth, kScreenHeight);
+  BoardStatus doubleStatus = makeSampleStatus();
+  doubleStatus.secondSourceAttributions = {"Data provided by Example Transit", "Another Agency"};
+  doubleEngine.renderDepartureBoard(makeSampleBoard(), doubleStatus);
+
+  auto inkCount = [](const std::vector<uint8_t>& pixels) {
+    size_t count = 0;
+    for (uint8_t p : pixels) {
+      if (p != 255) ++count;
+    }
+    return count;
+  };
+
+  const size_t baseInk = inkCount(baseline.pixels());
+  const size_t singleInk = inkCount(singleTarget.pixels());
+  const size_t doubleInk = inkCount(doubleTarget.pixels());
+
+  TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(baseInk, singleInk,
+                                          "a second-source attribution should add visible ink");
+  TEST_ASSERT_GREATER_THAN_UINT32_MESSAGE(singleInk, doubleInk,
+                                          "joining a second attribution onto the line should add more ink still");
+
+  // Still exactly one present() and the Transit badge itself is untouched
+  // -- this adds a line, it doesn't replace or duplicate the badge.
+  TEST_ASSERT_EQUAL_INT(1, doublePresenter.presentCount);
+
+  const std::string path = snapshotPath("departure_board_with_attribution.png");
+  TEST_ASSERT_TRUE_MESSAGE(singleTarget.writePng(path),
+                           "failed to write departure_board_with_attribution.png");
+}
+
 void test_focus_mode_paints_a_nontrivial_frame() {
   transit_test::HostRasterTarget target(kScreenWidth, kScreenHeight);
   NoopPresenter presenter;
@@ -968,6 +1054,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_departure_board_empty_shows_placeholder_text);
   RUN_TEST(test_empty_preset_trips_matches_baseline_layout);
   RUN_TEST(test_departure_board_with_preset_trips_shows_strip_above_footer);
+  RUN_TEST(test_empty_second_source_attributions_matches_baseline_layout);
+  RUN_TEST(test_second_source_attribution_adds_visible_line_above_badge);
   RUN_TEST(test_focus_mode_paints_a_nontrivial_frame);
   RUN_TEST(test_leave_now_urgency_adds_visible_emphasis);
   RUN_TEST(test_offline_cached_board_shows_a_stale_marker);

@@ -64,6 +64,17 @@ struct BoardStatus {
   };
   std::vector<PresetTripSummaryLine> presetTrips;
 
+  // Credit text for any active second-source agency whose terms require an
+  // on-device attribution (agencies/registry.json's attribution_required/
+  // attribution_text -- see docs/AGENCY_REGISTRY.md). Empty (the default,
+  // and STA's case today -- its terms don't require this) draws nothing
+  // extra and leaves the footer pixel-identical to before this field
+  // existed, same convention as presetTrips above. Not yet populated by
+  // main.cpp -- reading it from a real agency pack is separate, deferred
+  // work; this is the rendering half, exercised directly by
+  // test_render_snapshot in the meantime.
+  std::vector<std::string> secondSourceAttributions;
+
   // --- Where the rows below actually came from ----------------------------
   //
   // Three genuinely different kinds of information, which the board must

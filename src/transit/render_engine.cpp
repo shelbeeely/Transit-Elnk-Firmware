@@ -530,6 +530,28 @@ void drawFocusRow(fui::DrawTarget& target, const fui::Rect& rowRect, const Direc
   }
 }
 
+// Second-source attribution (BoardStatus::secondSourceAttributions,
+// agencies/registry.json's attribution_required/attribution_text) --
+// joined into one compact credit line rather than one per agency, so the
+// footer grows by a fixed amount regardless of how many active agencies
+// happen to require one. Empty entries are skipped rather than producing a
+// stray " · " -- defensive, not expected in practice (main.cpp would only
+// ever populate this from a non-empty attribution_text).
+std::string joinAttributions(const std::vector<std::string>& attributions) {
+  std::string joined;
+  for (const std::string& text : attributions) {
+    if (text.empty()) continue;
+    if (!joined.empty()) joined += " \xC2\xB7 ";  // " · " (U+00B7 MIDDLE DOT, UTF-8)
+    joined += text;
+  }
+  return joined;
+}
+
+// Compact credit line's height, reserved above the Transit badge only when
+// joinAttributions() produced something to show -- see
+// attributionFooterHeight()'s own comment.
+constexpr int16_t kSecondSourceAttributionLineHeight = 20;
+
 // Transit API ToS compliance (docs/DEPLOYMENT_OPS.md, "Transit API Terms of
 // Service -- compliance requirements"): the departure board -- this device's
 // main interface -- must always show a "Powered by Transit" attribution.
@@ -537,20 +559,45 @@ void drawFocusRow(fui::DrawTarget& target, const fui::Rect& rowRect, const Direc
 // official badge kit rasterized to a 1-bit mask -- see that header for the
 // exact conversion) via the same DrawTarget::bitmap()+Paint tinting path
 // drawRouteBadge() below uses for route icons, rather than a text label.
-void drawAttributionFooter(fui::DrawTarget& target, int16_t screenW, int16_t screenH, int16_t footerHeight) {
+//
+// secondSourceAttribution is joinAttributions()'s output -- empty (STA's
+// case today, and every case until a pack manifest actually feeds this)
+// draws only the Transit badge, pixel-identical to before this parameter
+// existed. Non-empty draws it as a small centered line above the badge,
+// which is why the badge's own rect is anchored to the bottom of the
+// (possibly taller) footer rather than centered within all of it.
+void drawAttributionFooter(fui::DrawTarget& target, int16_t screenW, int16_t screenH, int16_t footerHeight,
+                           const std::string& secondSourceAttribution) {
   const fui::BitmapRef badge{kPoweredByTransitBadgeMask, static_cast<uint16_t>(kPoweredByTransitBadgeWidth),
                              static_cast<uint16_t>(kPoweredByTransitBadgeHeight), fui::BitmapFormat::BW1,
                              /*progmem=*/true};
-  const fui::Rect rect{kMargin, static_cast<int16_t>(screenH - footerHeight),
-                       static_cast<int16_t>(screenW - 2 * kMargin), footerHeight};
-  target.bitmap(rect, badge, fui::BitmapMode::Center, fui::Paint::solid(fui::Color::Black));
+  const int16_t badgeStripHeight = static_cast<int16_t>(kPoweredByTransitBadgeHeight + kFooterPadding);
+  const fui::Rect badgeRect{kMargin, static_cast<int16_t>(screenH - badgeStripHeight),
+                            static_cast<int16_t>(screenW - 2 * kMargin), badgeStripHeight};
+  target.bitmap(badgeRect, badge, fui::BitmapMode::Center, fui::Paint::solid(fui::Color::Black));
+
+  if (secondSourceAttribution.empty()) return;
+
+  const fui::Rect creditRect{kMargin, static_cast<int16_t>(screenH - footerHeight),
+                             static_cast<int16_t>(screenW - 2 * kMargin), kSecondSourceAttributionLineHeight};
+  fui::TextStyle creditStyle;
+  creditStyle.align = fui::TextAlign::Center;
+  creditStyle.maxLines = 1;
+  target.text(creditRect, secondSourceAttribution.c_str(), creditStyle);
 }
 
 // Height of the attribution strip -- passed to drawAttributionFooter() and
-// reserved from the departure rows' body area: the badge's own native
-// height plus a little padding so it isn't flush against the screen edge.
-constexpr int16_t attributionFooterHeight() {
-  return static_cast<int16_t>(kPoweredByTransitBadgeHeight + kFooterPadding);
+// reserved from the departure rows' body area: the Transit badge's own
+// native height plus padding, plus (only when there's a second-source
+// credit to show) one more compact text line above it. Zero extra when
+// joinAttributions() is empty, so the departure-row layout is
+// pixel-identical to before this parameter existed in that case -- same
+// convention as presetStripHeight() above.
+int16_t attributionFooterHeight(const std::string& secondSourceAttribution) {
+  const int16_t base = static_cast<int16_t>(kPoweredByTransitBadgeHeight + kFooterPadding);
+  return secondSourceAttribution.empty()
+             ? base
+             : static_cast<int16_t>(base + kSecondSourceAttributionLineHeight);
 }
 
 // Shared by renderSetupPrompt()/renderSetupList(): a bold title plus a
@@ -592,7 +639,8 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
 
   drawStatusHeader(target_, screenWidth_, status);
 
-  const int16_t footerHeight = attributionFooterHeight();
+  const std::string secondSourceAttribution = joinAttributions(status.secondSourceAttributions);
+  const int16_t footerHeight = attributionFooterHeight(secondSourceAttribution);
   const int16_t presetStripH = presetStripHeight(status.presetTrips);
   const int16_t bodyTop = static_cast<int16_t>(kHeaderHeight + 8);
   // Reserve the footer strip (plus its own kMargin gap above it) and, when
@@ -688,7 +736,7 @@ void RenderEngine::renderDepartureBoard(const std::vector<DirectionBoard>& board
     drawPresetTripStrip(target_, screenWidth_, bodyBottom, status.presetTrips);
   }
 
-  drawAttributionFooter(target_, screenWidth_, screenHeight_, footerHeight);
+  drawAttributionFooter(target_, screenWidth_, screenHeight_, footerHeight, secondSourceAttribution);
 
   presenter_.present();
 }

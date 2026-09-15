@@ -31,6 +31,7 @@ with `tools/refresh_screenshots.sh` after any layout change (see
 | ![Focus mode](docs/screenshots/departure_board_focus_mode.png) **Focus mode** | ![Offline](docs/screenshots/departure_board_offline_cached.png) **Offline, showing cached data** |
 | ![Portrait](docs/screenshots/departure_board_portrait.png) **Portrait orientation** | ![Setup](docs/screenshots/setup_prompt.png) **First-run setup prompt** |
 | ![Timetable](docs/screenshots/departure_board_offline_timetable.png) **Offline, from the static timetable** | ![Scheduled vs realtime](docs/screenshots/departure_board_scheduled_vs_realtime.png) **Scheduled times beside real-time** |
+| ![Second-source attribution](docs/screenshots/departure_board_with_attribution.png) **Second-source agency credit, when its terms require one** ([`docs/AGENCY_REGISTRY.md`](docs/AGENCY_REGISTRY.md)) | |
 
 ## Hardware
 
