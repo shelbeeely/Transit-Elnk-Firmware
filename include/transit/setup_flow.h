@@ -27,6 +27,15 @@
 // setup AP: physical proximity to join the freshly created AP is the access
 // control, same as WiFiManager-style portals generally rely on.
 //
+// runFirstTimeSetup() also runs Improv Wi-Fi (improv_serial.h) over the
+// same USB-serial connection, alongside the AP/portal above rather than
+// instead of it: a browser tab that just flashed the board (site/flash.html,
+// ESP Web Tools) can hand over Wi-Fi credentials immediately, without the
+// user separately joining "TransitBoard-Setup" on a phone. The API key and
+// stop pick are NOT part of Improv — the portal still runs for those either
+// way, so joining the AP remains the only path if Improv isn't used (a
+// phone doing setup instead of a laptop, say).
+//
 // Hardware-dependent (WiFi AP/STA, DNSServer, WebServer, display) — only
 // buildable under [env:xteink_x4], not [env:native].
 //
@@ -43,6 +52,7 @@
 
 #include "transit/api_client.h"
 #include "transit/config_store.h"
+#include "transit/improv_serial.h"
 #include "transit/render_engine.h"
 
 namespace transit {
@@ -92,6 +102,19 @@ class SetupFlow {
   void stopPortal();
   void pollWifiConnectState();
   void touchActivity();
+
+  // Improv Wi-Fi over the same USB-serial connection the browser flasher
+  // used (site/flash.html, improv_serial.h) -- runFirstTimeSetup()-only,
+  // called once per portal-loop tick. Drains Serial into improvSerial_,
+  // and when that surfaces credentials, feeds them into the exact same
+  // pendingSsid_/pendingPassword_/WiFi.begin() path handleConnect() uses
+  // for the web-form case, so pollWifiConnectState() resolves either one
+  // identically. Reports the outcome back over Improv once
+  // pollWifiConnectState() resolves it, tracked via improvAwaitingResult_
+  // (only set when Improv, not the web form, initiated the attempt --
+  // otherwise a web-form connect would incorrectly narrate itself to a
+  // serial client that never asked).
+  void pollImprovSerial();
 
   // Guard for the first-run wizard's handlers (handleScan/handleConnect/
   // handleApiKey/handleStopSearch/handleStopSelect): startPortal() keeps all
@@ -199,6 +222,12 @@ class SetupFlow {
   std::string pendingPassword_;
 
   uint32_t lastActivityMs_ = 0;
+
+  ImprovSerial improvSerial_;
+  // True from the moment an Improv Wi-Fi Settings command sets
+  // wifiConnectState_ to kConnecting until pollImprovSerial() reports the
+  // outcome back over Improv -- see pollImprovSerial()'s comment above.
+  bool improvAwaitingResult_ = false;
 
   // Set by every individual settings handler (orientation/STA/presets) the
   // moment it saves something -- read only for runSettingsPortal()'s return

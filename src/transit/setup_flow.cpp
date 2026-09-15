@@ -48,6 +48,17 @@ constexpr const char* kApSsid = "TransitBoard-Setup";
 constexpr uint16_t kDnsPort = 53;
 constexpr uint16_t kHttpPort = 80;
 
+// Improv Wi-Fi (site/flash.html's browser flasher, via ESP Web Tools) —
+// see improv_serial.h's file comment for the protocol itself.
+ImprovDeviceInfo makeImprovDeviceInfo() {
+  ImprovDeviceInfo info;
+  info.firmwareName = "Transit-Elnk-Firmware";
+  info.firmwareVersion = FREEINK_FW_VERSION;
+  info.hardwareVariant = "ESP32-C3";
+  info.deviceName = "Transit-Elnk";
+  return info;
+}
+
 // Per-attempt Wi-Fi connect timeout (STA only — the AP interface never
 // drops). Mirrors the previous BLE-flow's tryConnectWifi timeout.
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
@@ -743,7 +754,8 @@ SetupFlow::SetupFlow(ConfigStore& configStore, TransitApiClient& apiClient, Rend
     : configStore_(configStore),
       apiClient_(apiClient),
       renderEngine_(renderEngine),
-      server_(kHttpPort) {}
+      server_(kHttpPort),
+      improvSerial_(makeImprovDeviceInfo()) {}
 
 void SetupFlow::touchActivity() { lastActivityMs_ = millis(); }
 
@@ -820,6 +832,43 @@ void SetupFlow::pollWifiConnectState() {
   if (millis() - wifiConnectStartMs_ > kWifiConnectTimeoutMs) {
     wifiConnectState_ = WifiConnectState::kFailed;
   }
+}
+
+void SetupFlow::pollImprovSerial() {
+  while (Serial.available() > 0) {
+    improvSerial_.handleByte(static_cast<uint8_t>(Serial.read()));
+  }
+
+  if (improvSerial_.hasPendingWifiCredentials()) {
+    ImprovWifiCredentials creds = improvSerial_.takePendingWifiCredentials();
+    pendingSsid_ = creds.ssid;
+    pendingPassword_ = creds.password;
+    // Same STA-only connect as handleConnect()'s web-form path -- the AP
+    // interface stays up throughout, so the portal itself never drops.
+    WiFi.begin(pendingSsid_.c_str(), pendingPassword_.empty() ? nullptr : pendingPassword_.c_str());
+    wifiConnectState_ = WifiConnectState::kConnecting;
+    wifiConnectStartMs_ = millis();
+    improvAwaitingResult_ = true;
+  }
+
+  // Only narrates an outcome Improv itself is waiting on -- a connect
+  // resolved via the web form instead leaves improvAwaitingResult_ false,
+  // so a serial client that never sent credentials doesn't get told about
+  // a connection attempt it didn't make.
+  if (improvAwaitingResult_) {
+    if (wifiConnectState_ == WifiConnectState::kConnected) {
+      // No follow-up URL -- the captive portal (still up on the AP) is
+      // where the API key and stop get picked, not a separate device page.
+      improvSerial_.reportProvisioned("");
+      improvAwaitingResult_ = false;
+    } else if (wifiConnectState_ == WifiConnectState::kFailed) {
+      improvSerial_.reportConnectFailed();
+      improvAwaitingResult_ = false;
+    }
+  }
+
+  const std::vector<uint8_t> out = improvSerial_.takeOutgoingBytes();
+  if (!out.empty()) Serial.write(out.data(), out.size());
 }
 
 // --- Route handlers ----------------------------------------------------------
@@ -1479,11 +1528,23 @@ bool SetupFlow::runFirstTimeSetup() {
     apiClient_.setApiKey(configStore_.apiKey());
   }
 
+  // Announce readiness once, unprompted -- a browser tab already watching
+  // the port (ESP Web Tools, right after flashing) doesn't have to guess
+  // whether this build speaks Improv by sending a probe first. Also
+  // answers on demand thereafter via pollImprovSerial()'s Request Current
+  // State handling.
+  improvSerial_.setState(ImprovState::kAuthorized);
+  {
+    const std::vector<uint8_t> greeting = improvSerial_.takeOutgoingBytes();
+    if (!greeting.empty()) Serial.write(greeting.data(), greeting.size());
+  }
+
   uint32_t provisionedAtMs = 0;
   while (true) {
     dnsServer_.processNextRequest();
     server_.handleClient();
     pollWifiConnectState();
+    pollImprovSerial();
 
     if (configStore_.isProvisioned()) {
       if (provisionedAtMs == 0) {

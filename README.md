@@ -47,8 +47,11 @@ with `tools/refresh_screenshots.sh` after any layout change (see
 
 No cable-and-PlatformIO setup needed: **[flash it from your browser &rarr;](https://shelbeeely.github.io/Transit-Elnk-Firmware/flash.html)**
 over USB in Chrome or Edge (the X4's native USB means no driver install
-either). Prefer the command line, or need the bringup/debug build? See
-[Building](#building) below.
+either). The flash page can also hand the board your Wi-Fi network right
+there via [Improv Wi-Fi](https://www.improv-wifi.com/) — see
+[First-run setup](#first-run-setup) below for what still needs the portal
+(API key, stop). Prefer the command line, or need the bringup/debug build?
+See [Building](#building) below.
 
 ## First-run setup
 
