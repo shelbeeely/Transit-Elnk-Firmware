@@ -123,7 +123,9 @@ void test_every_nvs_key_fits_the_fifteen_character_limit() {
   store.setTimeFormat("HH:mm");
   store.setLocale("en");
   store.setDisplayPortrait(true);
-  store.setStaStopCode("4377");
+  store.setSecondSourceAgencies({{"sta", "4377", true}});
+  store.setSecondSourceShowAllEnabled(true);
+  store.setActiveSecondSourceAgencyId("sta");
   store.setPresetLegs(transit::ConfigStore::PresetId::kHome, {});
   store.setPresetLegs(transit::ConfigStore::PresetId::kWork, {});
   store.setPresetWalkToFirstStopMin(transit::ConfigStore::PresetId::kHome, 5);
@@ -274,14 +276,87 @@ void test_display_portrait_defaults_to_landscape_and_round_trips() {
   TEST_ASSERT_FALSE(store.displayPortrait());
 }
 
-void test_sta_stop_code_empty_by_default_and_round_trips() {
+void test_second_source_agencies_empty_by_default() {
   InMemoryConfigBackend backend;
   transit::ConfigStore store(backend);
-  TEST_ASSERT_EQUAL_STRING("", store.staStopCode().c_str());
-  store.setStaStopCode("4377");
-  TEST_ASSERT_EQUAL_STRING("4377", store.staStopCode().c_str());
-  store.setStaStopCode("");
-  TEST_ASSERT_EQUAL_STRING("", store.staStopCode().c_str());
+  TEST_ASSERT_TRUE(store.secondSourceAgencies().empty());
+  TEST_ASSERT_EQUAL_STRING("", store.activeSecondSourceStopCode().c_str());
+}
+
+void test_second_source_agencies_single_entry_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+
+  transit::SecondSourceAgencyConfig sta;
+  sta.agencyId = "sta";
+  sta.stopCode = "4377";
+  sta.enabled = true;
+  store.setSecondSourceAgencies({sta});
+
+  auto agencies = store.secondSourceAgencies();
+  TEST_ASSERT_EQUAL_INT(1, agencies.size());
+  TEST_ASSERT_EQUAL_STRING("sta", agencies[0].agencyId.c_str());
+  TEST_ASSERT_EQUAL_STRING("4377", agencies[0].stopCode.c_str());
+  TEST_ASSERT_TRUE(agencies[0].enabled);
+
+  // Replaces the old staStopCode()'s role for every existing call site.
+  TEST_ASSERT_EQUAL_STRING("4377", store.activeSecondSourceStopCode().c_str());
+}
+
+void test_second_source_agencies_clearing_matches_the_old_empty_means_off_behavior() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  store.setSecondSourceAgencies({{"sta", "4377", true}});
+  TEST_ASSERT_EQUAL_STRING("4377", store.activeSecondSourceStopCode().c_str());
+
+  store.setSecondSourceAgencies({});
+  TEST_ASSERT_TRUE(store.secondSourceAgencies().empty());
+  TEST_ASSERT_EQUAL_STRING("", store.activeSecondSourceStopCode().c_str());
+}
+
+void test_second_source_agencies_multiple_entries_round_trip() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  store.setSecondSourceAgencies({{"sta", "4377", true}, {"other-agency", "STOP-12", false}});
+
+  auto agencies = store.secondSourceAgencies();
+  TEST_ASSERT_EQUAL_INT(2, agencies.size());
+  TEST_ASSERT_EQUAL_STRING("sta", agencies[0].agencyId.c_str());
+  TEST_ASSERT_TRUE(agencies[0].enabled);
+  TEST_ASSERT_EQUAL_STRING("other-agency", agencies[1].agencyId.c_str());
+  TEST_ASSERT_EQUAL_STRING("STOP-12", agencies[1].stopCode.c_str());
+  TEST_ASSERT_FALSE(agencies[1].enabled);
+}
+
+void test_active_second_source_stop_code_skips_disabled_entries() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  // Disabled first, enabled second -- activeSecondSourceStopCode() must
+  // fall through to the first *enabled* entry, not just the first entry.
+  store.setSecondSourceAgencies({{"sta", "4377", false}, {"other-agency", "STOP-12", true}});
+  TEST_ASSERT_EQUAL_STRING("STOP-12", store.activeSecondSourceStopCode().c_str());
+}
+
+void test_active_second_source_agency_id_selects_among_configured_agencies() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  store.setSecondSourceAgencies({{"sta", "4377", true}, {"other-agency", "STOP-12", true}});
+
+  TEST_ASSERT_EQUAL_STRING("", store.activeSecondSourceAgencyId().c_str());
+  // Unset -> falls back to the first enabled entry.
+  TEST_ASSERT_EQUAL_STRING("4377", store.activeSecondSourceStopCode().c_str());
+
+  store.setActiveSecondSourceAgencyId("other-agency");
+  TEST_ASSERT_EQUAL_STRING("other-agency", store.activeSecondSourceAgencyId().c_str());
+  TEST_ASSERT_EQUAL_STRING("STOP-12", store.activeSecondSourceStopCode().c_str());
+}
+
+void test_second_source_show_all_enabled_defaults_to_one_at_a_time_and_round_trips() {
+  InMemoryConfigBackend backend;
+  transit::ConfigStore store(backend);
+  TEST_ASSERT_FALSE(store.secondSourceShowAllEnabled());
+  store.setSecondSourceShowAllEnabled(true);
+  TEST_ASSERT_TRUE(store.secondSourceShowAllEnabled());
 }
 
 void test_sleep_window_start_and_end_default_and_round_trip() {
@@ -492,7 +567,13 @@ int main(int argc, char** argv) {
   RUN_TEST(test_time_format_default_and_round_trip);
   RUN_TEST(test_locale_default_and_round_trip);
   RUN_TEST(test_display_portrait_defaults_to_landscape_and_round_trips);
-  RUN_TEST(test_sta_stop_code_empty_by_default_and_round_trips);
+  RUN_TEST(test_second_source_agencies_empty_by_default);
+  RUN_TEST(test_second_source_agencies_single_entry_round_trip);
+  RUN_TEST(test_second_source_agencies_clearing_matches_the_old_empty_means_off_behavior);
+  RUN_TEST(test_second_source_agencies_multiple_entries_round_trip);
+  RUN_TEST(test_active_second_source_stop_code_skips_disabled_entries);
+  RUN_TEST(test_active_second_source_agency_id_selects_among_configured_agencies);
+  RUN_TEST(test_second_source_show_all_enabled_defaults_to_one_at_a_time_and_round_trips);
   RUN_TEST(test_sleep_window_start_and_end_default_and_round_trip);
   RUN_TEST(test_wifi_ssid_and_password_round_trip);
   RUN_TEST(test_api_key_and_stop_id_round_trip);

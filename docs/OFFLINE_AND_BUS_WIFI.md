@@ -257,8 +257,8 @@ read would turn a small problem into a blank board.)
 
 - **STA only.** The Transit API's four endpoints are all live queries with
   no static feed to download, so a non-STA stop has the cache and nothing
-  more. This path keys off the `sta_stop` setting, which is already
-  separate from the Transit `stop_id`.
+  more. This path keys off `docs/CONFIG_AND_STATE.md`'s `agency_list`
+  setting, which is already separate from the Transit `stop_id`.
 - **Scheduled, never real-time.** No delays, no cancellations, no detours.
 - **Needs the SD card**, a version-2 card, and a clock. With no usable
   clock there is no service day to look up.

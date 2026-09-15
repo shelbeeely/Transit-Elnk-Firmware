@@ -41,8 +41,8 @@ class StaClient {
   // shared-SPI-bus ordering requirement).
   StaClient(HttpTransport& transport, StaSdStore* sdStore);
 
-  // stopCode is ConfigStore::staStopCode() — the numeric code printed on
-  // the physical STA stop sign. Resolves it via sta_models.h's
+  // stopCode is ConfigStore::activeSecondSourceStopCode() — the numeric
+  // code printed on the physical STA stop sign. Resolves it via sta_models.h's
   // parseStaStopCode() (sta_stop_table.h), fetches and parses the live
   // feed, and returns Route entries ready to concatenate with the Transit
   // API's own (see sta_models.h::staDeparturesToRoutes() for the shape/

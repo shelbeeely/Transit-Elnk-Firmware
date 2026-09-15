@@ -953,7 +953,7 @@ void SetupFlow::handleGetStaStop() {
   touchActivity();
   if (!requireSettingsMode()) return;
   JsonDocument doc;
-  doc["stopCode"] = configStore_.staStopCode();
+  doc["stopCode"] = configStore_.activeSecondSourceStopCode();
   std::string body;
   serializeJson(doc, body);
   server_.send(200, "application/json", body.c_str());
@@ -979,7 +979,18 @@ void SetupFlow::handleSetStaStop() {
     return;
   }
 
-  configStore_.setStaStopCode(code);
+  // Still a single "sta" entry -- this page has no add-another-agency UI
+  // yet (docs/AGENCY_REGISTRY.md), so it always writes/replaces the whole
+  // list with zero or one entries, same shape config_store.h's
+  // SecondSourceAgencyConfig comment describes. Empty code clears the list
+  // entirely, matching the old setStaStopCode("")'s empty-means-off
+  // behavior exactly rather than saving a disabled empty-stopCode entry
+  // (which encodeAgency() must never receive -- see its own comment).
+  if (code.empty()) {
+    configStore_.setSecondSourceAgencies({});
+  } else {
+    configStore_.setSecondSourceAgencies({SecondSourceAgencyConfig{"sta", code, true}});
+  }
   settingsSaved_ = true;
   server_.send(200, "application/json", "{\"ok\":true}");
 }

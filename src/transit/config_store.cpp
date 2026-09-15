@@ -102,6 +102,58 @@ std::vector<TripLegConfig> decodeLegs(const std::string& joined) {
   return legs;
 }
 
+// One agency = "agencyId,stopCode,enabled(0/1)"; agencies joined with '|' —
+// same shape as encodeLeg/encodeLegs above, for the same reason (NVS has no
+// array type). agencyId is constrained by agencies/registry.schema.json's
+// pattern to lowercase letters/digits/hyphens, so it can never contain ','
+// or '|'; stopCode is assumed the same in practice (true of every
+// stop_code_convention documented so far) rather than escaped.
+//
+// stopCode must never be persisted empty: splitCsv (like joinCsv/splitCsv's
+// own comment notes) drops empty fields on read, which would shift
+// "enabled" into stopCode's position for that entry. This isn't reachable
+// through setSecondSourceAgencies() as intended -- "turn an agency off"
+// means removing its entry (empty list = none configured, matching the old
+// staStopCode()'s empty-means-off behavior) or setting enabled=false with
+// its real stopCode kept, never writing an empty stopCode into a kept
+// entry.
+std::string encodeAgency(const SecondSourceAgencyConfig& agency) {
+  return agency.agencyId + "," + agency.stopCode + "," + (agency.enabled ? "1" : "0");
+}
+
+SecondSourceAgencyConfig decodeAgency(const std::string& encoded) {
+  std::vector<std::string> fields = splitCsv(encoded);
+  SecondSourceAgencyConfig agency;
+  if (fields.size() > 0) agency.agencyId = fields[0];
+  if (fields.size() > 1) agency.stopCode = fields[1];
+  agency.enabled = fields.size() > 2 ? fields[2] != "0" : true;
+  return agency;
+}
+
+std::string encodeAgencies(const std::vector<SecondSourceAgencyConfig>& agencies) {
+  std::string joined;
+  for (size_t i = 0; i < agencies.size(); ++i) {
+    if (i > 0) joined += '|';
+    joined += encodeAgency(agencies[i]);
+  }
+  return joined;
+}
+
+std::vector<SecondSourceAgencyConfig> decodeAgencies(const std::string& joined) {
+  std::vector<SecondSourceAgencyConfig> agencies;
+  size_t start = 0;
+  while (start <= joined.size()) {
+    size_t bar = joined.find('|', start);
+    size_t end = (bar == std::string::npos) ? joined.size() : bar;
+    if (end > start) {
+      agencies.push_back(decodeAgency(joined.substr(start, end - start)));
+    }
+    if (bar == std::string::npos) break;
+    start = bar + 1;
+  }
+  return agencies;
+}
+
 const char* presetLegsKey(ConfigStore::PresetId id) {
   return id == ConfigStore::PresetId::kHome ? "home_legs" : "work_legs";
 }
@@ -199,8 +251,39 @@ void ConfigStore::setLocale(const std::string& locale) { backend_.setString("loc
 bool ConfigStore::displayPortrait() { return backend_.getBool("portrait", false); }
 void ConfigStore::setDisplayPortrait(bool portrait) { backend_.setBool("portrait", portrait); }
 
-std::string ConfigStore::staStopCode() { return backend_.getString("sta_stop", ""); }
-void ConfigStore::setStaStopCode(const std::string& stopCode) { backend_.setString("sta_stop", stopCode); }
+std::vector<SecondSourceAgencyConfig> ConfigStore::secondSourceAgencies() {
+  return decodeAgencies(backend_.getString("agency_list", ""));
+}
+void ConfigStore::setSecondSourceAgencies(const std::vector<SecondSourceAgencyConfig>& agencies) {
+  backend_.setString("agency_list", encodeAgencies(agencies));
+}
+
+bool ConfigStore::secondSourceShowAllEnabled() { return backend_.getBool("agency_all", false); }
+void ConfigStore::setSecondSourceShowAllEnabled(bool enabled) {
+  backend_.setBool("agency_all", enabled);
+}
+
+std::string ConfigStore::activeSecondSourceAgencyId() {
+  return backend_.getString("agency_active", "");
+}
+void ConfigStore::setActiveSecondSourceAgencyId(const std::string& agencyId) {
+  backend_.setString("agency_active", agencyId);
+}
+
+std::string ConfigStore::activeSecondSourceStopCode() {
+  std::vector<SecondSourceAgencyConfig> agencies = secondSourceAgencies();
+  const std::string activeId = activeSecondSourceAgencyId();
+
+  if (!activeId.empty()) {
+    for (const SecondSourceAgencyConfig& agency : agencies) {
+      if (agency.agencyId == activeId && agency.enabled) return agency.stopCode;
+    }
+  }
+  for (const SecondSourceAgencyConfig& agency : agencies) {
+    if (agency.enabled) return agency.stopCode;
+  }
+  return "";
+}
 
 std::vector<TripLegConfig> ConfigStore::presetLegs(PresetId id) {
   return decodeLegs(backend_.getString(presetLegsKey(id), ""));

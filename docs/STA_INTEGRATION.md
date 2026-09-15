@@ -3,7 +3,11 @@
 STA departures are optional and shown alongside Transit API departures, not
 merged/deduplicated with them (each STA row is labeled "STA `<route>`" —
 see `include/transit/sta_models.h`'s `staDeparturesToRoutes()`). Configured
-via `docs/CONFIG_AND_STATE.md`'s `sta_stop` key, empty by default (STA off).
+via `docs/CONFIG_AND_STATE.md`'s `agency_list` key (STA is currently the
+only entry the settings portal can add), empty by default (STA off).
+STA is also `agencies/registry.json`'s first entry — see
+`docs/AGENCY_REGISTRY.md` for the community-agency registry this data
+source is the reference implementation for.
 
 ## Data source: GTFS-RT, not the JSON REST API
 

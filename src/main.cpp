@@ -406,7 +406,7 @@ BootReport gatherBootReport() {
   report.wifiPassword = g_configStore.wifiPassword();
   report.apiKey = g_configStore.apiKey();
   report.stopId = g_configStore.stopId();
-  report.staStopCode = g_configStore.staStopCode();
+  report.staStopCode = g_configStore.activeSecondSourceStopCode();
   report.busWifiSsid = g_configStore.busWifiSsid();
   report.timezone = g_configStore.timezone();
   report.refreshIntervalMin = g_configStore.refreshIntervalMin();
@@ -996,14 +996,14 @@ void setup() {
     }
 
     // STA is a second, optional data source (docs/CONFIG_AND_STATE.md's
-    // sta_stop) shown alongside Transit's own departures, not merged into
+    // agency_list) shown alongside Transit's own departures, not merged into
     // them -- see sta_models.h's staDeparturesToRoutes(). Independent of
     // the Transit fetch above: attempted whenever Wi-Fi is up regardless of
     // whether that fetch succeeded, and a failure here (network, a stop
     // code sta_stop_table.h doesn't recognize, or too little free heap for
     // the ~190KB feed -- see sta_client.h) never affects status/routes
     // above, since the board still has Transit's departures either way.
-    std::string staStopCode = g_configStore.staStopCode();
+    std::string staStopCode = g_configStore.activeSecondSourceStopCode();
     if (!staStopCode.empty()) {
       sta::StaClient staClient(g_httpTransport, &g_staSdStore);
       std::vector<Route> staRoutes = staClient.fetchDepartures(staStopCode);
@@ -1108,7 +1108,7 @@ void setup() {
     // predictions the timetable can't know about, so a recent cache is
     // strictly better information while it lasts.
     if (board.empty()) {
-      const std::string staStopCode = g_configStore.staStopCode();
+      const std::string staStopCode = g_configStore.activeSecondSourceStopCode();
       const sta::StopInfo* staStop =
           staStopCode.empty() ? nullptr : sta::parseStaStopCode(staStopCode);
       if (staStop != nullptr && nowEpoch > 0) {

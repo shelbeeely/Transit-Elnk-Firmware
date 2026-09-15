@@ -54,6 +54,22 @@ class NvsConfigBackend : public ConfigBackend {
   bool isSet(const char* key) override;
 };
 
+// One configured second-source agency (agencies/registry.json's "id", plus
+// that agency's stop code per its own stop_code_convention). Replaces the
+// single sta_stop key/staStopCode()/setStaStopCode() this project shipped
+// with while only Spokane Transit existed -- see docs/AGENCY_REGISTRY.md.
+// Deliberately still a list of one in practice today: the settings portal
+// only ever writes a single entry (see setup_flow.cpp's handleSetStaStop())
+// until it grows an add/remove UI for a second one. This struct and
+// ConfigStore's accessors below are the data-model half of that; the
+// portal UI, and sta_client.cpp/main.cpp actually fetching more than one
+// agency per wake, are separate, not-yet-built follow-up work.
+struct SecondSourceAgencyConfig {
+  std::string agencyId;
+  std::string stopCode;
+  bool enabled = true;
+};
+
 class ConfigStore {
  public:
   explicit ConfigStore(ConfigBackend& backend);
@@ -123,16 +139,42 @@ class ConfigStore {
   bool displayPortrait();
   void setDisplayPortrait(bool portrait);
 
-  // STA (Spokane Transit Authority) is a second, optional data source
-  // alongside the Transit API — the numeric stop code printed on the
-  // physical STA stop sign (sta_stop_table.h resolves this to the
-  // GTFS-RT feed's internal stop_id and a display name; see
-  // sta_client.h). Empty = STA not configured, only Transit API
-  // departures show. Changeable via SetupFlow::runSettingsPortal(), same
-  // as displayPortrait() above — not part of first-run setup, since it's
-  // an optional add-on rather than something the board needs to function.
-  std::string staStopCode();
-  void setStaStopCode(const std::string& stopCode);
+  // --- Second-source agencies (agencies/registry.json) --------------------
+  //
+  // One or more optional agencies shown alongside the Transit API's own
+  // departures -- see SecondSourceAgencyConfig above. Empty list = none
+  // configured, only Transit API departures show (the old staStopCode()'s
+  // empty-means-off behavior, preserved). Changeable via
+  // SetupFlow::runSettingsPortal(), same as displayPortrait() above — not
+  // part of first-run setup, since this is an optional add-on rather than
+  // something the board needs to function.
+  std::vector<SecondSourceAgencyConfig> secondSourceAgencies();
+  void setSecondSourceAgencies(const std::vector<SecondSourceAgencyConfig>& agencies);
+
+  // true = every enabled configured agency's departures render together,
+  // each labeled by agency. false ("one at a time", the default) = only
+  // activeSecondSourceAgencyId() is shown. Defaults to false: with the
+  // portal today only ever configuring one agency anyway, "one at a time"
+  // is also the least cluttered default for once a second one can be
+  // added -- see docs/AGENCY_REGISTRY.md.
+  bool secondSourceShowAllEnabled();
+  void setSecondSourceShowAllEnabled(bool enabled);
+
+  // Which configured agency is active in "one at a time" mode. Empty (the
+  // default) falls back to the first enabled entry in
+  // secondSourceAgencies() -- so a board with exactly one configured
+  // agency never needs this set explicitly.
+  std::string activeSecondSourceAgencyId();
+  void setActiveSecondSourceAgencyId(const std::string& agencyId);
+
+  // Convenience for a caller that (like every one today) only cares about
+  // a single active stop code: the stop code of whichever agency is
+  // "active" right now (activeSecondSourceAgencyId() if set and present
+  // among secondSourceAgencies(), else the first enabled entry), or empty
+  // if none configured. Exactly replaces the old staStopCode() at every
+  // such call site -- with at most one entry ever configured today, this
+  // is a like-for-like read, not a behavior change.
+  std::string activeSecondSourceStopCode();
 
   // Preset "Home"/"Work" trip planning (see trip_planner.h) — a fixed,
   // user-configured leg chain per preset (e.g. route 31 A->B, then route 32

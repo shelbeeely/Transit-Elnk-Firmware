@@ -75,7 +75,7 @@ class SetupFlow {
 
   // Same AP + captive-portal machinery as runFirstTimeSetup(), but serves a
   // settings-only page (display orientation, docs/CONFIG_AND_STATE.md's
-  // display_portrait; the optional STA stop code, sta_stop; and optional
+  // display_portrait; the optional STA stop code, agency_list; and optional
   // "Home"/"Work" preset trip chains, trip_planner.h/config_store.h's
   // presetLegs() et al.) instead of the Wi-Fi/API key/stop wizard — so an
   // already-provisioned board can have a setting changed without redoing

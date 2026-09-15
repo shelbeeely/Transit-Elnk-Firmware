@@ -3,7 +3,7 @@
 // Transit-Elnk-Firmware — Spokane Transit Authority (STA) data shapes.
 //
 // STA is a second, optional data source alongside the Transit API
-// (docs/CONFIG_AND_STATE.md's sta_stop key) — fetched from STA's own public
+// (docs/CONFIG_AND_STATE.md's agency_list key) — fetched from STA's own public
 // GTFS-RT feed (see sta_feed_parser.h/sta_client.h), not through Transit's
 // API. Kept as its own small model rather than shoehorned into
 // transit::Route: a GTFS-RT TripUpdate carries far fewer fields than a
@@ -78,14 +78,15 @@ struct StaDeparture {
 // from a Transit one on the panel, without any render_engine changes.
 //
 // stopName is applied to every route's MergedItinerary::closestStop —
-// callers pass the single configured STA stop's resolved name (sta_stop
-// resolves to exactly one stop, unlike Transit's stop_departures which can
-// query several).
+// callers pass the single configured STA stop's resolved name
+// (ConfigStore::activeSecondSourceStopCode() resolves to exactly one stop,
+// unlike Transit's stop_departures which can query several).
 std::vector<Route> staDeparturesToRoutes(const std::vector<StaDeparture>& departures,
                                           const std::string& stopName);
 
-// Parses and resolves a stop code (what ConfigStore::staStopCode() stores,
-// and what a user types during setup) against sta_stop_table.h in one
+// Parses and resolves a stop code (what
+// ConfigStore::activeSecondSourceStopCode() stores, and what a user types
+// during setup) against sta_stop_table.h in one
 // place, shared by SetupFlow::handleSetStaStop() (validating a code as it's
 // entered) and StaClient::fetchDepartures() (resolving one to actually
 // fetch against) — kept in sync by construction rather than by each call

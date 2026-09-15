@@ -80,7 +80,9 @@ field, since `API_KEY` isn't part of that particular sample); in production
 | `time_format` | TV's `timeFormat` (`'HH:mm'` / `'hh:mm A'`) | enum | Cosmetic — the firmware shows countdown minutes, not clock time, in most views; keep if a clock-time view is ever added |
 | `locale` | neither repo sets `locale`/`Accept-Language` today | string | New capability from v4, optional |
 | `display_portrait` | n/a (no web equivalent — both existing apps run in a browser tab, not a fixed physical panel) | bool | **New setting.** `false` (default) = landscape, the X4 panel's native orientation; `true` = portrait (rotated 90°). Not part of the first-run wizard — changed via the settings portal (a long power-button hold at boot on an already-provisioned board — see `SetupFlow::runSettingsPortal()`) |
-| `sta_stop` | n/a — a second, optional data source (Spokane Transit Authority), not in either reference app | string | **New setting.** The numeric stop code printed on a physical STA stop sign; empty (default) = STA departures off, only Transit API departures show. Resolved to STA's internal `stop_id`/display name via the baked-in `sta_stop_table.h` (see `tools/gen_sta_tables.py`). Also settings-portal-only, like `display_portrait` — see `docs/STA_INTEGRATION.md` for the data source itself |
+| `agency_list` | n/a — a second, optional data source, not in either reference app | array of `{agencyId, stopCode, enabled}` | **New setting**, replacing the earlier single-agency `sta_stop`. Empty (default) = no second source, only Transit API departures show. One row per configured agency (`agencies/registry.json`'s `id`, plus that agency's stop code per its own `stop_code_convention` — e.g. STA's is the numeric code on the physical stop sign, resolved via the baked-in `sta_stop_table.h`, see `tools/gen_sta_tables.py`). The settings portal today only ever writes zero or one rows (`id: "sta"`) — see `docs/AGENCY_REGISTRY.md` for the add-a-second-agency UI this sets up but doesn't yet build. Settings-portal-only, like `display_portrait` |
+| `agency_all` | n/a | bool | **New setting.** `false` (default, "one at a time") = only the active configured agency's departures show; `true` ("all enabled") = every enabled configured agency's departures render together, each labeled by agency |
+| `agency_active` | n/a | string | **New setting.** Which configured agency (`agency_list`'s `agencyId`) is active in "one at a time" mode; empty (default) falls back to the first enabled entry in `agency_list` |
 | `home_legs`, `work_legs` | n/a — neither reference app has a trip-planning/transfer concept | string | **New setting.** A preset's ordered route-chain legs (e.g. "31 → 32 → 97"), settings-portal-only — see `docs/TRIP_PLANNER.md`. Empty (default) = that preset not configured. Each leg is `routeId,boardStopId,alightStopId,directionId` joined with `,`; legs joined with `\|` |
 | `home_walk_min`, `work_walk_min` | n/a | int | **New setting.** Minutes to walk to that preset's first leg's boarding stop; default **0**. Subtracted from the first leg's departure time to compute the preset's "leave by" time |
 | `xfer_buf_min` | n/a | int | **New setting.** Shared minimum minutes between an estimated transfer arrival and the next leg's departure, applied to both presets; default **3** |
@@ -101,10 +103,14 @@ name is too long: `refresh_interval_min` → `refresh_int_min`,
 `sleep_window_start`/`sleep_window_end` → `sleep_win_start`/`sleep_win_end`,
 `departure_window_min` → `dep_win_min`, `max_departures_per_direction` →
 `max_dep_per_dir`, `static_direction` → `static_dir`, `display_portrait` →
-`portrait`, `sta_stop` is already short enough to use as-is. `hidden_routes[]` /
+`portrait`; `agency_list`/`agency_all`/`agency_active` are already short
+enough to use as-is. `hidden_routes[]` /
 `route_order[]` are each stored as one comma-joined string under
 `hidden_routes` / `route_order` respectively (NVS has no native array
-type) — see the accessors' comments in `config_store.cpp`. The bus Wi-Fi
+type) — `agency_list[]` follows the same shape one level deeper (each row
+`agencyId,stopCode,enabled` comma-joined, rows `|`-joined, matching
+`home_legs`/`work_legs` above) — see the accessors' comments in
+`config_store.cpp`. The bus Wi-Fi
 and cache keys added at the bottom of the table are written literally as
 shown; all five fit. A regression test
 (`test_config_store`'s `test_every_nvs_key_fits_the_fifteen_character_limit`)

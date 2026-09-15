@@ -1,8 +1,9 @@
 #pragma once
 
 // Transit-Elnk-Firmware -- STA stop lookup, keyed by the numeric stop code
-// printed on the physical stop sign (what ConfigStore::staStopCode() stores,
-// entered during setup -- see setup_flow.h). Resolves that to the
+// printed on the physical stop sign (what
+// ConfigStore::activeSecondSourceStopCode() stores, entered during setup --
+// see setup_flow.h). Resolves that to the
 // alphanumeric stop_id the GTFS-RT feed actually keys its
 // stop_time_update entries on (see sta_feed_parser.h), plus a human-readable
 // name to confirm the pick during setup. Neither the code->id mapping nor the
@@ -19,7 +20,7 @@ namespace transit {
 namespace sta {
 
 struct StopInfo {
-  uint16_t stopCode;   // printed on the sign; ConfigStore::staStopCode()
+  uint16_t stopCode;   // printed on the sign; ConfigStore::activeSecondSourceStopCode()
   char stopId[9];      // GTFS-RT stop_time_update.stop_id (<=8 chars + NUL)
   const char* stopName;
 };
