@@ -43,6 +43,13 @@ with `tools/refresh_screenshots.sh` after any layout change (see
   which is what keeps an approximate clock running when there's no network
   to sync against.
 
+## Getting firmware onto the board
+
+No cable-and-PlatformIO setup needed: **[flash it from your browser &rarr;](https://shelbeeely.github.io/Transit-Elnk-Firmware/flash.html)**
+over USB in Chrome or Edge (the X4's native USB means no driver install
+either). Prefer the command line, or need the bringup/debug build? See
+[Building](#building) below.
+
 ## First-run setup
 
 On first boot (or whenever `wifi_ssid`/`api_key`/`stop_id` aren't all set),

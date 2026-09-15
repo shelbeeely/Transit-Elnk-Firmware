@@ -79,6 +79,73 @@ jobs:
             exit 1
           fi
 
+      - name: Publish the browser-flashable build to the Pages site
+        id: web_install
+        # A from-scratch flash (as opposed to the OTA path above) needs the
+        # bootloader and partition table too, not just the app image -- and
+        # ESP Web Tools' <esp-web-install-button> fetches its manifest and
+        # binaries with plain fetch(), which GitHub Release assets refuse
+        # with CORS (verified against release-assets.githubusercontent.com:
+        # no Access-Control-Allow-Origin header, even with an Origin sent).
+        # Publishing into site/firmware/ instead makes the flash page and
+        # the binaries it fetches same-origin, which sidesteps that
+        # entirely -- the same approach web.esphome.io and Tasmota's own
+        # installer use.
+        run: |
+          set -euo pipefail
+          mkdir -p site/firmware
+          cp .pio/build/xteink_x4/bootloader.bin site/firmware/bootloader.bin
+          cp .pio/build/xteink_x4/partitions.bin site/firmware/partitions.bin
+          cp .pio/build/xteink_x4/firmware.bin site/firmware/firmware.bin
+
+          VERSION="${GITHUB_REF_NAME}"
+          cat > site/firmware/install-manifest.json <<JSON
+          {
+            "name": "Transit-Elnk-Firmware",
+            "version": "${VERSION}",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "bootloader.bin", "offset": 0 },
+                  { "path": "partitions.bin", "offset": 32768 },
+                  { "path": "firmware.bin", "offset": 65536 }
+                ]
+              }
+            ]
+          }
+          JSON
+
+      - name: Commit the browser-flashable build to main
+        # release.yml runs on a tag ref (detached), but the Pages site is
+        # built from main -- switch there before committing, same pattern
+        # sta-timetable.yml uses for its own generated, bot-committed files.
+        # This push also re-triggers pages.yml (it watches site/**), so the
+        # flash page picks up the new build without a separate step here.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/web-install-stage
+          cp site/firmware/*.bin site/firmware/install-manifest.json /tmp/web-install-stage/
+
+          git fetch origin main
+          git checkout main
+          mkdir -p site/firmware
+          cp /tmp/web-install-stage/* site/firmware/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/firmware/
+          if git diff --cached --quiet; then
+            echo "no change: site/firmware/ already matches this build"
+          else
+            git commit -m "Publish ${GITHUB_REF_NAME} to the browser flasher
+
+          Built from ${GITHUB_SHA}. Picked up by the Pages site's
+          site/flash.html via <esp-web-install-button>."
+            git push origin HEAD:main
+          fi
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,7 +156,9 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --notes "Firmware \`${{ steps.artifacts.outputs.version }}\`, ${{ steps.artifacts.outputs.size }} bytes, sha256 \`${{ steps.artifacts.outputs.sha256 }}\`.
 
-          Install over the air by pointing the board's manifest URL at:
+          First flash (no cable-and-PlatformIO setup needed): [flash it from your browser](https://shelbeeely.github.io/Transit-Elnk-Firmware/flash.html) over USB, Chrome or Edge only.
+
+          Already on a board? Install over the air by pointing the board's manifest URL at:
           \`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/manifest.json\`
 
           Or upload \`firmware.bin\` directly from the settings portal's Firmware step. See [docs/OTA_UPDATES.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/docs/OTA_UPDATES.md)."
