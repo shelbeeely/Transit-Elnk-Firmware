@@ -68,16 +68,22 @@ whether the terms require an on-device credit, the way Transit's ToS does
 
 ## Where this stands today
 
-**The firmware doesn't read this registry at runtime yet.** Right now it's
-a coordination and tracking mechanism — a structured, reviewable place to
-request an agency and to record one that's been worked out — plus the
-schema every future entry has to satisfy. The `sta_*` modules
-(`STA_INTEGRATION.md`) are still the one implementation, specific to
-Spokane. Generalizing them to read an arbitrary registry entry (picking an
-agency in the settings portal, downloading a pre-generated data pack for
-it instead of a fixed STA-only flash table) is real, separate firmware
-work that hasn't happened yet — this registry is what that work will be
-driven by, not a promise that it already is.
+**The firmware doesn't fetch live data for more than one agency yet.**
+Every `status: "supported"` entry's `name`/`region`/`attribution_text`/
+`terms_url` is compiled into the board (`tools/gen_agency_metadata.py` →
+`agency_metadata.h`), and `ConfigStore::secondSourceAgencies()` is a real
+list, not a single value — so the settings portal already lets you enable
+multiple agencies, pick "all together" or "one at a time," and see each
+one's copyright/terms right on the page. What's still missing: only STA
+has anything to actually *fetch* (a live GTFS-RT feed, a stop-code
+validation table, an offline pack). Adding a second real agency needs the
+`sta_*` modules (`STA_INTEGRATION.md`) generalized away from being
+Spokane-specific — reading an arbitrary `gtfs_rt` entry instead of one
+hardcoded feed, downloading a pre-generated data pack instead of a fixed
+STA-only flash table — which is separate, not-yet-started firmware work.
+This registry, the compiled metadata, and the portal's multi-agency UI are
+what that work will plug into, not a promise that a second agency already
+works end to end.
 
 ## Requesting an agency
 

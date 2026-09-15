@@ -30,6 +30,7 @@
 #include <Update.h>
 #include <WiFi.h>
 
+#include "transit/agency_metadata.h"
 #include "transit/build_info.h"
 #include "transit/ota_update.h"
 #include "transit/sta_models.h"
@@ -316,13 +317,22 @@ looks &mdash; see docs/OFFLINE_AND_BUS_WIFI.md.</p>
 <div id="orientation-msg" class="msg"></div>
 </section>
 
-<section id="step-sta">
-<p>Optional &mdash; also show Spokane Transit Authority (STA) departures alongside Transit's.</p>
-<label>STA stop number</label>
-<input id="sta-stop" placeholder="e.g. 4377 &mdash; printed on the stop sign">
-<button onclick="saveStaStop()">Save</button>
+<section id="step-agencies">
+<p>Optional &mdash; show one or more second transit agencies' departures
+alongside Transit's.</p>
+<div id="agency-list"></div>
+<div id="agency-mode" style="display:none">
+<label>When more than one is enabled</label>
+<label class="inline"><input type="radio" name="agency-mode" value="one" checked onchange="updateAgencyModeVisibility()"> Show one at a time</label>
+<label class="inline"><input type="radio" name="agency-mode" value="all" onchange="updateAgencyModeVisibility()"> Show all together</label>
+<div id="agency-active-wrap" style="display:none">
+<label>Active agency</label>
+<select id="agency-active"></select>
+</div>
+</div>
+<button onclick="saveAgencies()">Save</button>
 <button onclick="showStep('step-presets')">Skip</button>
-<div id="sta-msg" class="msg"></div>
+<div id="agency-msg" class="msg"></div>
 </section>
 
 <section id="step-presets">
@@ -432,24 +442,99 @@ function saveOrientation(){
   if(tz) body += '&tz='+encodeURIComponent(tz);
   fetch('/setorientation',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(function(r){return r.json();}).then(function(res){
-      if(res.ok){
-        fetch('/getstastop').then(function(r){return r.json();}).then(function(s){
-          el('sta-stop').value = s.stopCode || '';
-        }).catch(function(){});
-        showStep('step-sta');
-      }
+      if(res.ok){ loadAgencies(); showStep('step-agencies'); }
       else { setMsg('orientation-msg',res.message||'Could not save.','err'); }
     }).catch(function(){ setMsg('orientation-msg','Could not reach the board. Try again.','err'); });
 }
 
-function saveStaStop(){
-  var code = el('sta-stop').value.trim();
-  setMsg('sta-msg','Saving...','');
-  fetch('/setstastop',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'code='+encodeURIComponent(code)})
+// --- Second-source agencies --------------------------------------------
+//
+// availableAgencies (every agency this build knows about, from
+// /listagencies -- currently always just one, STA, but the page is built
+// against the list regardless) drives what renderAgencyList() offers;
+// /getagencies' response (what's actually configured right now) seeds
+// each row's checkbox/stop-code/mode state on load.
+var availableAgencies = [];
+
+function loadAgencies(){
+  fetch('/listagencies').then(function(r){return r.json();}).then(function(s){
+    availableAgencies = s.agencies||[];
+    return fetch('/getagencies').then(function(r){return r.json();}).then(function(cfg){
+      var configured = {};
+      (cfg.agencies||[]).forEach(function(a){ configured[a.id] = a; });
+      renderAgencyList(configured);
+      var mode = cfg.showAllEnabled ? 'all' : 'one';
+      document.getElementsByName('agency-mode').forEach(function(r){ r.checked = (r.value===mode); });
+      updateAgencyModeVisibility();
+      if (cfg.activeAgencyId) el('agency-active').value = cfg.activeAgencyId;
+    });
+  }).catch(function(){ renderAgencyList({}); });
+}
+
+function renderAgencyList(configured){
+  var html = '';
+  availableAgencies.forEach(function(a){
+    var cfg = configured[a.id] || {stopCode:'', enabled:false};
+    html += '<div class="leg">';
+    html += '<label class="inline"><input type="checkbox" id="agency-en-'+a.id+'" onchange="updateAgencyModeVisibility()"'+(cfg.enabled?' checked':'')+'> '+a.name+'</label>';
+    html += '<input id="agency-code-'+a.id+'" placeholder="Stop code" value="'+(cfg.stopCode||'').replace(/"/g,'&quot;')+'">';
+    if (a.termsUrl) html += '<p class="leg-summary">Data &amp; terms: <a href="'+a.termsUrl+'" target="_blank" rel="noopener">'+a.termsUrl+'</a></p>';
+    if (a.attributionRequired && a.attributionText) html += '<p class="leg-summary">Required credit: '+a.attributionText+'</p>';
+    html += '</div>';
+  });
+  el('agency-list').innerHTML = html || '<p class="leg-summary">No second data sources are available in this build.</p>';
+  updateAgencyModeVisibility();
+}
+
+// Shows the all-vs-one-at-a-time toggle only once a second checkbox is
+// actually ticked -- a single configured agency has nothing to toggle
+// between, so the control would just be confusing clutter until then.
+function updateAgencyModeVisibility(){
+  var enabledIds = availableAgencies.filter(function(a){
+    var cb = document.getElementById('agency-en-'+a.id);
+    return cb && cb.checked;
+  }).map(function(a){ return a.id; });
+
+  el('agency-mode').style.display = enabledIds.length>1 ? 'block' : 'none';
+
+  var oneAtATime = document.querySelector('input[name=agency-mode]:checked').value==='one';
+  var showActivePicker = enabledIds.length>1 && oneAtATime;
+  el('agency-active-wrap').style.display = showActivePicker ? 'block' : 'none';
+  if (showActivePicker) {
+    var sel = el('agency-active');
+    var current = sel.value;
+    sel.innerHTML = '';
+    enabledIds.forEach(function(id){
+      var a = availableAgencies.filter(function(x){ return x.id===id; })[0];
+      var opt = document.createElement('option');
+      opt.value = id; opt.textContent = a.name;
+      sel.appendChild(opt);
+    });
+    if (enabledIds.indexOf(current)>=0) sel.value = current;
+  }
+}
+
+function saveAgencies(){
+  var agencies = [];
+  availableAgencies.forEach(function(a){
+    var cb = document.getElementById('agency-en-'+a.id);
+    var code = document.getElementById('agency-code-'+a.id).value.trim();
+    // Unchecked, or checked with no code entered, both mean "not
+    // configured" -- setagencies drops an empty-code entry either way
+    // (config_store.cpp's encodeAgency() must never receive one), but
+    // skipping it here too means an unchecked row's stray typed text
+    // doesn't get sent at all.
+    if (cb && cb.checked && code) agencies.push({id:a.id, stopCode:code, enabled:true});
+  });
+  var showAllEnabled = document.querySelector('input[name=agency-mode]:checked').value==='all';
+  var activeAgencyId = showAllEnabled ? '' : (el('agency-active').value||'');
+
+  setMsg('agency-msg','Saving...','');
+  fetch('/setagencies',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agencies:agencies,showAllEnabled:showAllEnabled,activeAgencyId:activeAgencyId})})
     .then(function(r){return r.json();}).then(function(res){
       if(res.ok){ loadPresets(); showStep('step-presets'); }
-      else { setMsg('sta-msg',res.message||'Could not save.','err'); }
-    }).catch(function(){ setMsg('sta-msg','Could not reach the board. Try again.','err'); });
+      else { setMsg('agency-msg',res.message||'Could not save.','err'); }
+    }).catch(function(){ setMsg('agency-msg','Could not reach the board. Try again.','err'); });
 }
 
 // --- Preset "Home"/"Work" leg chains ---------------------------------------
@@ -774,8 +859,9 @@ void SetupFlow::startPortal() {
   server_.on("/stopselect", HTTP_POST, [this]() { handleStopSelect(); });
   server_.on("/getorientation", HTTP_GET, [this]() { handleGetOrientation(); });
   server_.on("/setorientation", HTTP_POST, [this]() { handleSetOrientation(); });
-  server_.on("/getstastop", HTTP_GET, [this]() { handleGetStaStop(); });
-  server_.on("/setstastop", HTTP_POST, [this]() { handleSetStaStop(); });
+  server_.on("/listagencies", HTTP_GET, [this]() { handleListAgencies(); });
+  server_.on("/getagencies", HTTP_GET, [this]() { handleGetAgencies(); });
+  server_.on("/setagencies", HTTP_POST, [this]() { handleSetAgencies(); });
   server_.on("/legdirections", HTTP_POST, [this]() { handleLegDirections(); });
   server_.on("/getpresets", HTTP_GET, [this]() { handleGetPresets(); });
   server_.on("/setpresets", HTTP_POST, [this]() { handleSetPresets(); });
@@ -949,48 +1035,124 @@ void SetupFlow::handleSetBusWifi() {
   server_.send(200, "application/json", "{\"ok\":true}");
 }
 
-void SetupFlow::handleGetStaStop() {
+namespace {
+// Shared by handleListAgencies()/handleGetAgencies() -- writes one agency's
+// display metadata (agency_metadata.h, generated from agencies/registry.json)
+// into a JSON object. id is always present even when metadata lookup
+// misses (a configured agency whose id was since removed from the
+// registry, in practice only reachable by hand-editing NVS) -- the page
+// falls back to showing the raw id with no copyright/terms line rather
+// than dropping the entry silently.
+void writeAgencyMetadataJson(const char* id, JsonObject out) {
+  out["id"] = id;
+  const AgencyMetadata* meta = findAgencyMetadata(id);
+  out["name"] = meta != nullptr ? meta->name : id;
+  out["region"] = meta != nullptr ? meta->region : "";
+  out["attributionRequired"] = meta != nullptr && meta->attributionRequired;
+  out["attributionText"] = meta != nullptr ? meta->attributionText : "";
+  out["termsUrl"] = meta != nullptr ? meta->termsUrl : "";
+}
+}  // namespace
+
+void SetupFlow::handleListAgencies() {
   touchActivity();
   if (!requireSettingsMode()) return;
   JsonDocument doc;
-  doc["stopCode"] = configStore_.activeSecondSourceStopCode();
+  JsonArray agencies = doc["agencies"].to<JsonArray>();
+  for (size_t i = 0; i < kAgencyMetadataCount; ++i) {
+    writeAgencyMetadataJson(kAgencyMetadata[i].id, agencies.add<JsonObject>());
+  }
   std::string body;
   serializeJson(doc, body);
   server_.send(200, "application/json", body.c_str());
 }
 
-void SetupFlow::handleSetStaStop() {
+void SetupFlow::handleGetAgencies() {
   touchActivity();
   if (!requireSettingsMode()) return;
-  std::string code = server_.hasArg("code") ? server_.arg("code").c_str() : "";
+  JsonDocument doc;
+  JsonArray agencies = doc["agencies"].to<JsonArray>();
+  for (const SecondSourceAgencyConfig& agency : configStore_.secondSourceAgencies()) {
+    JsonObject entry = agencies.add<JsonObject>();
+    entry["stopCode"] = agency.stopCode;
+    entry["enabled"] = agency.enabled;
+    writeAgencyMetadataJson(agency.agencyId.c_str(), entry);
+  }
+  doc["showAllEnabled"] = configStore_.secondSourceShowAllEnabled();
+  doc["activeAgencyId"] = configStore_.activeSecondSourceAgencyId();
+  std::string body;
+  serializeJson(doc, body);
+  server_.send(200, "application/json", body.c_str());
+}
 
-  // Validated synchronously against the baked-in sta_stop_table.h (a plain
-  // table lookup, not a network call like handleApiKey()'s validation) via
-  // the same sta::parseStaStopCode() helper StaClient::fetchDepartures()
-  // resolves a saved code with, so a typo surfaces here immediately rather
-  // than silently saving a code that will just never match anything at
-  // fetch time -- and the two can't drift out of sync with each other.
-  // Empty is always accepted -- it means "STA not configured," same as an
-  // empty api_key/stop_id means "not provisioned" elsewhere in this flow.
-  if (!code.empty() && sta::parseStaStopCode(code) == nullptr) {
-    server_.send(200, "application/json",
-                 "{\"ok\":false,\"message\":\"Stop number not found. Check the number on the "
-                 "sign.\"}");
+void SetupFlow::handleSetAgencies() {
+  touchActivity();
+  if (!requireSettingsMode()) return;
+
+  // JSON body, not form fields -- same reasoning as handleSetPresets()
+  // below (a variable-length list doesn't fit
+  // application/x-www-form-urlencoded cleanly).
+  std::string rawBody = server_.hasArg("plain") ? server_.arg("plain").c_str() : "";
+  JsonDocument doc;
+  if (deserializeJson(doc, rawBody) != DeserializationError::Ok) {
+    server_.send(200, "application/json", "{\"ok\":false,\"message\":\"Malformed request.\"}");
     return;
   }
 
-  // Still a single "sta" entry -- this page has no add-another-agency UI
-  // yet (docs/AGENCY_REGISTRY.md), so it always writes/replaces the whole
-  // list with zero or one entries, same shape config_store.h's
-  // SecondSourceAgencyConfig comment describes. Empty code clears the list
-  // entirely, matching the old setStaStopCode("")'s empty-means-off
-  // behavior exactly rather than saving a disabled empty-stopCode entry
-  // (which encodeAgency() must never receive -- see its own comment).
-  if (code.empty()) {
-    configStore_.setSecondSourceAgencies({});
-  } else {
-    configStore_.setSecondSourceAgencies({SecondSourceAgencyConfig{"sta", code, true}});
+  JsonArrayConst agenciesJson = doc["agencies"].as<JsonArrayConst>();
+  // Generous but bounded -- there is exactly one agency in the compiled
+  // table as of this writing, so this only guards against a malformed
+  // request with duplicate/garbage entries, the same defensive spirit as
+  // parseLegsJson()'s leg-count cap below.
+  if (agenciesJson.size() > 16) {
+    server_.send(200, "application/json", "{\"ok\":false,\"message\":\"Too many agencies.\"}");
+    return;
   }
+
+  std::vector<SecondSourceAgencyConfig> agencies;
+  for (JsonObjectConst entryJson : agenciesJson) {
+    std::string id = entryJson["id"] | "";
+    std::string stopCode = entryJson["stopCode"] | "";
+    // Trim -- kSettingsPageHtml's fields already do this client-side, but a
+    // stray space would otherwise persist all the way into a live fetch
+    // that then just never matches.
+    while (!stopCode.empty() && stopCode.front() == ' ') stopCode.erase(stopCode.begin());
+    while (!stopCode.empty() && stopCode.back() == ' ') stopCode.pop_back();
+
+    if (id.empty() || findAgencyMetadata(id.c_str()) == nullptr) {
+      server_.send(200, "application/json", "{\"ok\":false,\"message\":\"Unknown agency.\"}");
+      return;
+    }
+    // Empty stop code means "not configured" -- drop the entry entirely
+    // rather than saving one with an enabled flag but nothing to fetch.
+    // config_store.cpp's encodeAgency() must never receive an empty
+    // stopCode either way (see its own comment).
+    if (stopCode.empty()) continue;
+
+    // STA is the one agency with an on-device stop table to validate
+    // against (sta_stop_table.h) -- same check handleSetStaStop() used to
+    // do, so a typo still surfaces here rather than silently saving a code
+    // that will never match anything at fetch time. No other agency has an
+    // equivalent table yet (see agency_metadata.h's file comment), so a
+    // non-STA code is accepted as-is; there's nothing on this board to
+    // check it against.
+    if (id == "sta" && sta::parseStaStopCode(stopCode) == nullptr) {
+      server_.send(200, "application/json",
+                   "{\"ok\":false,\"message\":\"Stop number not found. Check the number on the "
+                   "sign.\"}");
+      return;
+    }
+
+    SecondSourceAgencyConfig agency;
+    agency.agencyId = id;
+    agency.stopCode = stopCode;
+    agency.enabled = entryJson["enabled"] | true;
+    agencies.push_back(agency);
+  }
+
+  configStore_.setSecondSourceAgencies(agencies);
+  configStore_.setSecondSourceShowAllEnabled(doc["showAllEnabled"] | false);
+  configStore_.setActiveSecondSourceAgencyId(doc["activeAgencyId"] | "");
   settingsSaved_ = true;
   server_.send(200, "application/json", "{\"ok\":true}");
 }
@@ -1171,9 +1333,10 @@ bool SetupFlow::requireFirstRunMode() {
 
 // The mirror image of requireFirstRunMode(), for the settings-only
 // handlers above: startPortal() also keeps /getorientation, /setorientation,
-// /getstastop, and /setstastop registered while the open first-run AP is up
-// (before the board is even provisioned), even though the first-run
-// wizard's own page never presents those steps and never links to them.
+// /listagencies, /getagencies, and /setagencies registered while the open
+// first-run AP is up (before the board is even provisioned), even though
+// the first-run wizard's own page never presents those steps and never
+// links to them.
 // Lower stakes than the first-run-endpoints-during-settings case above
 // (anyone on that AP already has full first-run wizard access anyway), but
 // there's no reason to leave settings writable from a step of the flow

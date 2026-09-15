@@ -165,10 +165,18 @@ glue that actually opens the files via `SDCardManager`.
 Not part of first-run setup (it's an optional add-on, not something the
 board needs to function) — entered/changed via the settings portal
 (`SetupFlow::runSettingsPortal()`, reached by a long power-button hold at
-boot on an already-provisioned board): a stop-code text field, validated
-synchronously against `sta_stop_table.h` (no network call needed) so a typo
-surfaces immediately rather than silently producing zero STA departures
-later. Leaving it blank (or clearing a previously-set one) turns STA off.
+boot on an already-provisioned board), on a second-data-sources step that
+lists every agency this build's compiled `agency_metadata.h` table knows
+about (generated from `agencies/registry.json` — see
+`docs/AGENCY_REGISTRY.md`; STA is the only entry today). STA's stop-code
+field is validated synchronously against `sta_stop_table.h` (no network
+call needed) so a typo surfaces immediately rather than silently producing
+zero STA departures later — no other agency has an equivalent on-device
+table yet, so that check is STA-specific (`SetupFlow::handleSetAgencies()`).
+Unchecking it (or leaving its stop code blank) turns STA off. The page also
+shows STA's terms-of-use link and, if its terms required one, its
+attribution credit — see `agency_metadata.h`'s file comment for where that
+comes from.
 
 ## Static timetable (offline departures)
 

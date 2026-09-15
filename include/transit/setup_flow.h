@@ -128,11 +128,11 @@ class SetupFlow {
   bool requireFirstRunMode();
 
   // Mirror image of requireFirstRunMode(), for the settings-only handlers
-  // (handleGetOrientation/handleSetOrientation/handleGetStaStop/
-  // handleSetStaStop): refuses to act unless portalMode_ is kSettings, so
-  // they aren't reachable from the open first-run AP before the board is
-  // even provisioned, even though startPortal() keeps their routes
-  // registered regardless of mode.
+  // (handleGetOrientation/handleSetOrientation/handleListAgencies/
+  // handleGetAgencies/handleSetAgencies): refuses to act unless portalMode_
+  // is kSettings, so they aren't reachable from the open first-run AP
+  // before the board is even provisioned, even though startPortal() keeps
+  // their routes registered regardless of mode.
   bool requireSettingsMode();
 
   // WebServer route handlers (see setup_flow.cpp for the served page/JSON
@@ -146,8 +146,21 @@ class SetupFlow {
   void handleStopSelect();
   void handleGetOrientation();
   void handleSetOrientation();
-  void handleGetStaStop();
-  void handleSetStaStop();
+
+  // Second-source agencies (ConfigStore::secondSourceAgencies() et al.,
+  // agencies/registry.json via the compiled agency_metadata.h table) --
+  // settings-only, requireSettingsMode()-guarded like the handlers above.
+  // handleListAgencies() returns every agency this build knows about (the
+  // full compiled table -- what the page can offer to add), independent of
+  // what's actually configured; handleGetAgencies() returns what's
+  // currently configured (ConfigStore's list, mode, and active id), each
+  // entry annotated with that agency's metadata (name/attribution/terms)
+  // via findAgencyMetadata() so the page can show copyright info without a
+  // second round trip. handleSetAgencies() takes the whole set in one
+  // JSON POST, same shape as handleSetPresets() below.
+  void handleListAgencies();
+  void handleGetAgencies();
+  void handleSetAgencies();
 
   // Preset "Home"/"Work" trip-planning settings (trip_planner.h,
   // ConfigStore::presetLegs() et al.) -- settings-only, requireSettingsMode()
@@ -169,7 +182,7 @@ class SetupFlow {
   // busWifiSsid()/busWifiIdentity()/busPortalSubmitUrl()/
   // busPortalFieldName()) -- settings-only, requireSettingsMode()-guarded
   // like the handlers above. Four plain strings with no live validation
-  // behind them: unlike handleSetStaStop()'s stop-code lookup or
+  // behind them: unlike handleSetAgencies()'s STA stop-code lookup or
   // handleApiKey()'s one-off API call, there is nothing to validate an
   // SSID or a portal field name against without being on that network, so
   // these save what they're given. A wrong value surfaces as the board

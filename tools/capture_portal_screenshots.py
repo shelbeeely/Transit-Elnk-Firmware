@@ -52,7 +52,34 @@ STUB_ROUTES = {
     "/scan": ["Cedar Street 2.4", "Cedar Street 5G", "STA-WiFi", "xfinitywifi"],
     "/status": {"wifiState": "connected", "provisioned": False, "apiKeySet": False, "stopSet": False},
     "/getorientation": {"portrait": False, "tz": "PST8PDT,M3.2.0,M11.1.0"},
-    "/getstastop": {"stopCode": "4377"},
+    "/listagencies": {
+        "agencies": [
+            {
+                "id": "sta",
+                "name": "Spokane Transit Authority",
+                "region": "Spokane, WA, USA",
+                "attributionRequired": False,
+                "attributionText": "",
+                "termsUrl": "https://www.spokanetransit.com/developers-terms-of-use/",
+            },
+        ],
+    },
+    "/getagencies": {
+        "agencies": [
+            {
+                "id": "sta",
+                "stopCode": "4377",
+                "enabled": True,
+                "name": "Spokane Transit Authority",
+                "region": "Spokane, WA, USA",
+                "attributionRequired": False,
+                "attributionText": "",
+                "termsUrl": "https://www.spokanetransit.com/developers-terms-of-use/",
+            },
+        ],
+        "showAllEnabled": False,
+        "activeAgencyId": "",
+    },
     "/getpresets": {
         "home": {"legCount": 2, "walkMin": 4},
         "work": {"legCount": 1, "walkMin": 7},
@@ -212,7 +239,7 @@ def main() -> None:
         page2.wait_for_timeout(250)
 
         shoot(page2, out_dir, "portal_settings_display", "step-orientation")
-        shoot(page2, out_dir, "portal_settings_sta", "step-sta")
+        shoot(page2, out_dir, "portal_settings_agencies", "step-agencies", "loadAgencies();")
         shoot(page2, out_dir, "portal_settings_presets", "step-presets", """
             loadPresets();
             addLeg('home');

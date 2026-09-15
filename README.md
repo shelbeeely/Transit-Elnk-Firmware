@@ -77,12 +77,16 @@ portal for things that aren't part of first-run setup:
 
 - **Display orientation** — landscape (the panel's native orientation) or
   portrait.
-- **STA departures** — optionally show Spokane Transit Authority arrivals
-  alongside Transit's, by entering the numeric stop code printed on a
-  physical STA stop sign. An SD card (the X4 has a real slot) is optional
-  on top of this — it carries STA's full static GTFS data for real
-  per-trip headsigns/direction grouping, where the board otherwise falls
-  back to smaller always-available flash tables. See
+- **Second data sources** — optionally show one or more other agencies'
+  departures alongside Transit's (Spokane Transit Authority today — see
+  [`docs/AGENCY_REGISTRY.md`](docs/AGENCY_REGISTRY.md) for the community
+  agency list), each by its own stop code, with that agency's copyright
+  and terms-of-use link shown right on the settings page. With more than
+  one enabled, choose "show all together" or "one at a time." An SD card
+  (the X4 has a real slot) is optional on top of this — for STA it carries
+  the full static GTFS data for real per-trip headsigns/direction
+  grouping, where the board otherwise falls back to smaller
+  always-available flash tables. See
   [`docs/STA_INTEGRATION.md`](docs/STA_INTEGRATION.md) for how that data
   source (and the SD card layer) works, and its compliance notes.
 - **"Home"/"Work" preset trips** — optionally save a fixed route chain
@@ -208,7 +212,7 @@ layout change so the images above match what the firmware actually draws.
 | `tools/refresh_screenshots.sh`, `tools/png_recompress.py`, `tools/capture_portal_screenshots.py` | Regenerate and shrink every screenshot under `docs/screenshots/` — board frames from the render engine, portal pages from a headless browser |
 | `site/`, `tools/build_site.sh` | The GitHub Pages product site (`.github/workflows/pages.yml` deploys it) |
 | `.github/workflows/release.yml` | Tag-driven firmware release: builds the image, generates the OTA manifest and the browser-flasher's install manifest, and publishes the release + a same-origin copy into `site/firmware/` for `site/flash.html` |
-| `agencies/`, `.github/workflows/agency-registry.yml`, `tools/validate_agency_registry.py` | The community agency registry — see [`docs/AGENCY_REGISTRY.md`](docs/AGENCY_REGISTRY.md) |
+| `agencies/`, `.github/workflows/agency-registry.yml`, `tools/validate_agency_registry.py`, `tools/gen_agency_metadata.py` | The community agency registry, and the generator that compiles each `supported` entry's name/attribution/terms into `agency_metadata.h` for the settings portal — see [`docs/AGENCY_REGISTRY.md`](docs/AGENCY_REGISTRY.md) |
 | `freeink-sdk/` | Vendored SDK submodule — display driver, UI framework, board config, power management, etc. |
 | `docs/` | Design spec this firmware is built against (see table below) |
 

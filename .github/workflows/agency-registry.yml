@@ -9,18 +9,30 @@ name: Agency registry
 # checked -- deliberately schema-plus-shape only, no outbound requests to
 # agency servers, so a third party having a bad minute can't fail an
 # unrelated contributor's CI.
+#
+# Also checks include/transit/agency_metadata.h + src/transit/
+# agency_metadata.cpp (the settings portal's on-device copy of each
+# supported agency's name/attribution/terms) are what
+# tools/gen_agency_metadata.py would produce from the registry as committed
+# -- catches a registry edit whose generated files weren't regenerated to
+# match, the same class of drift docs/STA_INTEGRATION.md's own weekly
+# workflow guards against for STA's tables.
 
 on:
   pull_request:
     paths:
       - "agencies/**"
       - "tools/validate_agency_registry.py"
+      - "tools/gen_agency_metadata.py"
+      - "include/transit/agency_metadata.h"
+      - "src/transit/agency_metadata.cpp"
       - ".github/workflows/agency-registry.yml"
   push:
     branches: [main]
     paths:
       - "agencies/**"
       - "tools/validate_agency_registry.py"
+      - "tools/gen_agency_metadata.py"
   workflow_dispatch:
 
 jobs:
@@ -36,3 +48,12 @@ jobs:
       - run: pip install jsonschema
 
       - run: python3 tools/validate_agency_registry.py
+
+      - name: Check agency_metadata.h/.cpp are up to date
+        run: |
+          set -euo pipefail
+          python3 tools/gen_agency_metadata.py
+          if ! git diff --exit-code -- include/transit/agency_metadata.h src/transit/agency_metadata.cpp; then
+            echo "::error::agency_metadata.h/.cpp don't match agencies/registry.json -- run 'python3 tools/gen_agency_metadata.py' and commit the result" >&2
+            exit 1
+          fi
