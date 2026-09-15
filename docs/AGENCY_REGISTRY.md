@@ -39,9 +39,32 @@ See [Requesting an agency](#requesting-an-agency) below.
 the static GTFS data comes from, that agency's own terms of use reviewed
 (not assumed), and what stop-identification scheme a rider has to use. The
 schema (`agencies/registry.schema.json`) requires `gtfs_rt`,
-`gtfs_static_source`, `stop_code_convention`, `docs`, and `maintainer` for
-this tier — CI (`.github/workflows/agency-registry.yml`) rejects a
-`supported` entry missing any of them.
+`gtfs_static_source`, `stop_code_convention`, `docs`, `maintainer`,
+`terms_url`, and `attribution_required` for this tier — CI
+(`.github/workflows/agency-registry.yml`) rejects a `supported` entry
+missing any of them.
+
+### Redistribution: the offline pack is a different legal question than the live fetch
+
+Fetching an agency's live GTFS-RT feed and displaying it on one device is
+"use and display" — narrow, and what every `supported` entry's `gtfs_rt`
+already does. **A pre-generated offline-timetable pack is different: this
+project's own CI builds a compiled copy of that agency's data and
+publishes it for strangers to download** (`offline_timetable_supported:
+true`). That's redistribution, a broader grant some agencies' terms may
+not give — STA's happens to ("reproduce, redistribute and display", per
+`STA_INTEGRATION.md`'s Compliance section), but that isn't assumed for any
+other entry.
+
+So the schema hard-requires `redistribution_permitted: true` on any entry
+with `offline_timetable_supported: true`, and rejects the combination
+otherwise — checked at validation time, not left as something a PR author
+has to remember. If an agency's terms don't clearly permit redistributing
+a derived copy, ship the live second source only: leave
+`offline_timetable_supported` false/absent and don't build a pack for it.
+`attribution_required` (+ `attribution_text` if true) records separately
+whether the terms require an on-device credit, the way Transit's ToS does
+(`docs/DEPLOYMENT_OPS.md`) and STA's explicitly does not.
 
 ## Where this stands today
 
@@ -95,7 +118,12 @@ In short, you'd be figuring out:
   or a public mirror like the Mobility Database, as STA needed).
 - That agency's actual published terms of use for using their data — read
   and cited, the way `STA_INTEGRATION.md`'s Compliance section is, not
-  assumed from a generic API's usual norms.
+  assumed from a generic API's usual norms. Record the result as
+  `terms_url`, `redistribution_permitted`, and `attribution_required` (+
+  `attribution_text`) — see
+  [Redistribution](#redistribution-the-offline-pack-is-a-different-legal-question-than-the-live-fetch)
+  above for what these mean and why `redistribution_permitted` gates
+  whether `offline_timetable_supported` can be `true` at all.
 - What a rider has to type into the settings portal to identify a stop for
   this agency.
 

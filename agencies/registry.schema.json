@@ -59,7 +59,7 @@
         },
         "offline_timetable_supported": {
           "type": "boolean",
-          "description": "Whether the SD-card static-timetable fallback (docs/OFFLINE_AND_BUS_WIFI.md) has been generated/tested for this agency, not just the live second source."
+          "description": "Whether a pre-generated pack (routes/stops/trips) is built and distributed for this agency's SD-card static-timetable fallback (docs/OFFLINE_AND_BUS_WIFI.md) -- distinct from the live second source, and the thing that actually triggers redistributing a compiled copy of this agency's data to end users. Requires redistribution_permitted: true -- see that field."
         },
         "docs": {
           "type": "string",
@@ -68,14 +68,57 @@
         "maintainer": {
           "type": "string",
           "description": "GitHub username of whoever did the integration work and can answer questions about it."
+        },
+        "terms_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "The agency's own published terms of use, actually read (docs/STA_INTEGRATION.md's Compliance section is the depth expected) -- not a generic API's usual norms assumed to apply."
+        },
+        "redistribution_permitted": {
+          "type": "boolean",
+          "description": "Whether terms_url's terms permit redistributing a compiled/derived copy of this agency's data to third parties -- a broader ask than fetching it live and displaying it on one device, which is all the live second source (gtfs_rt) does. Required and must be true whenever offline_timetable_supported is true, since building and publishing a pack IS that redistribution. If the terms don't permit it, ship the live second source only and leave offline_timetable_supported false/absent -- don't build a pack."
+        },
+        "attribution_required": {
+          "type": "boolean",
+          "description": "Whether terms_url's terms require an on-device credit (the way Transit's ToS does, docs/DEPLOYMENT_OPS.md -- unlike STA's own terms, which explicitly don't). Required for status=supported so this is a checked fact, not something a future change has to remember to look up."
+        },
+        "attribution_text": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "The exact credit text/form required, when attribution_required is true."
         }
       },
       "allOf": [
         {
           "if": { "properties": { "status": { "const": "supported" } }, "required": ["status"] },
           "then": {
-            "required": ["gtfs_rt", "gtfs_static_source", "stop_code_convention", "docs", "maintainer"]
+            "required": [
+              "gtfs_rt", "gtfs_static_source", "stop_code_convention", "docs", "maintainer",
+              "terms_url", "attribution_required"
+            ]
           }
+        },
+        {
+          "if": {
+            "properties": { "offline_timetable_supported": { "const": true } },
+            "required": ["offline_timetable_supported"]
+          },
+          "then": {
+            "required": ["redistribution_permitted"],
+            "properties": {
+              "redistribution_permitted": {
+                "const": true,
+                "description": "A pack cannot be built/distributed for this agency unless this is explicitly true -- see this field's own description above."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "attribution_required": { "const": true } },
+            "required": ["attribution_required"]
+          },
+          "then": { "required": ["attribution_text"] }
         }
       ]
     },

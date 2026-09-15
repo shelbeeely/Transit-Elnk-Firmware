@@ -18,7 +18,11 @@
       "stop_code_convention": "The numeric code printed on the physical stop sign.",
       "offline_timetable_supported": true,
       "docs": "docs/STA_INTEGRATION.md",
-      "maintainer": "shelbeeely"
+      "maintainer": "shelbeeely",
+      "terms_url": "https://www.spokanetransit.com/developers-terms-of-use/",
+      "redistribution_permitted": true,
+      "attribution_required": false,
+      "notes": "License to Data (§1) of STA's Developers Terms of Use grants 'a limited, revocable license to use, reproduce, redistribute and display the Data', which is what permits building/publishing an offline pack, not just fetching it live. No on-device attribution badge is required by these terms (unlike Transit's ToS) -- see docs/STA_INTEGRATION.md's Compliance section for the full review, including the trademark/logo restriction this project already respects (plain-text 'STA <route>' labels only)."
     }
   ]
 }

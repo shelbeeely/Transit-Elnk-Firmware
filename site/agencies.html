@@ -144,12 +144,23 @@
       if (agency.offline_timetable_supported) bits.push("offline timetable");
       if (agency.gtfs_rt) bits.push("live second source");
       if (bits.length) card.appendChild(el("p", "notes", bits.join(" · ")));
+      if (agency.attribution_required && agency.attribution_text) {
+        card.appendChild(el("p", "notes", "Attribution required: “" + agency.attribution_text + "”"));
+      }
       if (agency.docs) {
         var a = document.createElement("a");
         a.className = "doclink";
         a.href = "https://github.com/shelbeeely/Transit-Elnk-Firmware/blob/HEAD/" + agency.docs;
         a.textContent = "Read the writeup →";
         card.appendChild(a);
+      }
+      if (agency.terms_url) {
+        var t = document.createElement("a");
+        t.className = "doclink";
+        t.href = agency.terms_url;
+        t.textContent = "Terms of use →";
+        t.style.marginLeft = "1rem";
+        card.appendChild(t);
       }
     } else if (agency.requested_by) {
       card.appendChild(el("p", "notes", "Requested by " + agency.requested_by));
