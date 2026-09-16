@@ -110,6 +110,39 @@ covers, so the expiry date is readable without a board:
 { "valid_from": "20260517", "valid_until": "20260919", ... }
 ```
 
+It also records **which routes actually changed** in this regeneration,
+not just that the validity window moved — a service change rarely touches
+every route, so a single "the feed changed" flag would hide that most
+routes usually didn't. Two separate fields answer two separate questions:
+
+```json
+"changed_routes": { "added": [], "removed": [], "changed": [] },
+"schedule_changed_routes": { "added": ["4"], "removed": [], "changed": ["31"] }
+```
+
+`changed_routes` is cosmetic only: `tools/gen_sta_tables.py`'s
+`diff_routes()` computes it by comparing the newly generated route table
+against whatever was already committed at `src/transit/sta_route_table.cpp`
+before this run overwrote it. "Changed" here means route 31's rider-facing
+name or panel color differs from before — it says nothing about whether
+its schedule moved, because the flash table carries no schedule data at
+all (see `sta_gtfs_binary.h`'s trip-level data for that).
+
+`schedule_changed_routes` is the one that actually answers "STA revised
+the schedule, which routes did it touch" — the thing that happens a few
+times a year and rarely touches every route. `route_schedule_signatures()`
+hashes each route's trips + stop_times (departure order, headsigns,
+service/direction) into one digest per route_id, and `diff_schedules()`
+compares that against the previous run's digests. Those digests are the
+`schedule_signatures` field of this same file — since the SD card payload
+they're computed from (`sd_card_data/`) isn't committed (see
+`tools/gen_sta_tables.py`'s module docstring), this tracked JSON file is
+the only place a "previous run" to diff against actually exists. No new
+file, format, or pipeline: it's the same regeneration this workflow
+already runs, computing one more comparison over data it already reads.
+
+The commit message `sta-timetable.yml` writes includes both summaries.
+
 ### What it can't do
 
 - **It can't put files on the card.** That step is yours; the issue says so

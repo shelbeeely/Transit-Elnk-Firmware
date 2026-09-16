@@ -53,8 +53,10 @@ builds -- see sd_card_data/README.md, written once by this script).
 
 import argparse
 import csv
+import hashlib
 import io
 import json
+import re
 import struct
 import sys
 import urllib.request
@@ -123,7 +125,8 @@ def resolve_latest_feed_url() -> tuple:
     return newest["mediaLink"], newest["name"], newest.get("updated", "")
 
 
-def feed_status(zf: zipfile.ZipFile, source_name: str) -> dict:
+def feed_status(zf: zipfile.ZipFile, source_name: str, route_diff: dict,
+                 schedule_diff: dict, schedule_signatures: dict) -> dict:
     """Machine-readable summary of the feed just processed.
 
     Written to a tracked JSON file so the repository itself records when the
@@ -149,6 +152,22 @@ def feed_status(zf: zipfile.ZipFile, source_name: str) -> dict:
         "feed_trips": sum(1 for _ in read_csv(zf, "trips.txt")),
         "sd_bytes": sum(p.stat().st_size for p in sorted(SD_DATA_DIR.glob("*.bin"))),
         "stop_times_bytes": stop_times_path.stat().st_size if stop_times_path.exists() else 0,
+        # Which route_ids' rider-facing NAME/COLOR differ from the
+        # previously generated flash table (see diff_routes()) -- cosmetic
+        # only, not schedule. Rarely changes.
+        "changed_routes": route_diff,
+        # Which route_ids' actual TIMETABLE (trips + stop_times) differs
+        # from the previous run (see route_schedule_signatures() /
+        # diff_schedules()) -- this is what answers "STA revised the
+        # schedule, which routes did it touch," since a service change
+        # rarely touches every route.
+        "schedule_changed_routes": schedule_diff,
+        # This run's per-route timetable digests, kept so the *next* run can
+        # diff against them -- the SD card payload they're computed from
+        # (sd_card_data/) isn't committed (see this script's module
+        # docstring), so this tracked file is the only place a "previous"
+        # state exists to compare against.
+        "schedule_signatures": schedule_signatures,
     }
 
 
@@ -170,7 +189,109 @@ def c_string_literal(s: str) -> str:
     return f'"{escaped}"'
 
 
-def gen_route_table(zf: zipfile.ZipFile) -> None:
+def parse_existing_route_table(cpp_path: Path) -> dict:
+    """route_id -> (shortName, color, textColor) from a previously generated
+    sta_route_table.cpp, for diff_routes() below. {} if the file doesn't
+    exist yet (first run) -- an empty "before" state, not an error.
+
+    Regexes this script's own generated literal (`{"id", "name", 0xRRGGBB,
+    0xRRGGBB},`) rather than a general C++ parse -- this function and
+    gen_route_table()'s writer are the only reader/writer of that format,
+    so they only ever have to agree with each other.
+    """
+    if not cpp_path.exists():
+        return {}
+    pattern = re.compile(
+        r'\{"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*0x([0-9A-Fa-f]+),\s*0x([0-9A-Fa-f]+)\}'
+    )
+    return {
+        route_id: (short_name, color.upper(), text_color.upper())
+        for route_id, short_name, color, text_color in pattern.findall(cpp_path.read_text())
+    }
+
+
+def diff_by_route(old: dict, new: dict) -> dict:
+    """Which route_ids were added, removed, or have a different value in
+    `new` than in `old` -- the shared shape both diff_routes() (name/color)
+    and diff_schedules() (trip/stop_times signature) report in, so
+    feed_status() has one comparison, not two slightly different ones.
+    """
+    added = sorted(set(new) - set(old))
+    removed = sorted(set(old) - set(new))
+    changed = sorted(route_id for route_id in (set(new) & set(old)) if new[route_id] != old[route_id])
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def diff_routes(old: dict, new_routes: list) -> dict:
+    """Which route_ids' rider-facing name/color differ from `old` (the
+    previously generated table).
+
+    STA's periodic service changes don't touch every route -- some get new
+    schedules/colors/names, most don't -- so a single feed-wide "it changed"
+    flag would hide that most of a given regeneration is a no-op for most
+    routes. This is what actually gets recorded (see feed_status() below)
+    instead of just a new valid_from/valid_until window.
+    """
+    new = {
+        r["route_id"]: (r["route_short_name"], (r["route_color"] or "000000").upper(),
+                        (r["route_text_color"] or "FFFFFF").upper())
+        for r in new_routes
+    }
+    return diff_by_route(old, new)
+
+
+def route_schedule_signatures(zf: zipfile.ZipFile, trips: list) -> dict:
+    """route_id -> sha1 hex digest over that route's actual timetable (trips
+    + stop_times), NOT its name/color (see diff_routes() above for that --
+    they're different questions). This is what answers the thing STA
+    actually does a few times a year: revise *schedules* on some routes,
+    unrelated to whether any route's rider-facing name or color changed.
+
+    Kept as a handful of hex strings in docs/sta_feed_status.json (see
+    feed_status()) rather than a new file or format -- diff_schedules()
+    below just compares this run's digest per route against the previous
+    run's, already-committed value, the same trick diff_routes() plays
+    against the previously committed route table source.
+    """
+    route_for_trip = {r["trip_id"]: r["route_id"] for r in trips}
+    trip_fields = {
+        r["trip_id"]: (r["service_id"], r["direction_id"], r["trip_headsign"].strip())
+        for r in trips
+    }
+
+    stop_times_by_trip: dict = {}
+    for r in read_csv(zf, "stop_times.txt"):
+        trip_id = r["trip_id"].strip()
+        if trip_id not in route_for_trip:
+            continue
+        stop_times_by_trip.setdefault(trip_id, []).append(
+            (int(r["stop_sequence"]), r["stop_id"].strip(),
+             r["arrival_time"].strip(), r["departure_time"].strip())
+        )
+
+    per_route: dict = {}
+    for trip_id, route_id in route_for_trip.items():
+        stop_times = sorted(stop_times_by_trip.get(trip_id, []))
+        per_route.setdefault(route_id, []).append((trip_id, trip_fields[trip_id], stop_times))
+
+    signatures = {}
+    for route_id, trip_records in per_route.items():
+        trip_records.sort(key=lambda t: t[0])
+        blob = json.dumps(trip_records, sort_keys=True).encode("utf-8")
+        signatures[route_id] = hashlib.sha1(blob).hexdigest()
+    return signatures
+
+
+def diff_schedules(old: dict, new: dict) -> dict:
+    """Which route_ids' actual timetables changed since the previous run's
+    recorded signatures -- see route_schedule_signatures(). This, not
+    diff_routes(), is what answers "STA updated the schedule, which routes
+    did it touch."
+    """
+    return diff_by_route(old, new)
+
+
+def gen_route_table(zf: zipfile.ZipFile) -> dict:
     rows = read_csv(zf, "routes.txt")
 
     # Only rows whose route_id is purely numeric are kept: cross-checked
@@ -231,6 +352,7 @@ def gen_route_table(zf: zipfile.ZipFile) -> None:
         )
 
     src = SRC_DIR / "sta_route_table.cpp"
+    route_diff = diff_routes(parse_existing_route_table(src), routes)
     src.write_text(
         HEADER_NOTE + "\n"
         '#include "transit/sta_route_table.h"\n\n'
@@ -259,6 +381,13 @@ def gen_route_table(zf: zipfile.ZipFile) -> None:
     )
     print(f"wrote {header} and {src} ({len(routes)} routes, "
           f"{len(rows) - len(routes)} non-numeric route_ids skipped)")
+    if route_diff["added"] or route_diff["removed"] or route_diff["changed"]:
+        print(f"  routes added: {route_diff['added'] or '(none)'}")
+        print(f"  routes removed: {route_diff['removed'] or '(none)'}")
+        print(f"  routes changed (name/color): {route_diff['changed'] or '(none)'}")
+    else:
+        print("  no route changes since the last generated table")
+    return route_diff
 
 
 def gen_stop_table(zf: zipfile.ZipFile) -> None:
@@ -497,7 +626,7 @@ def gen_schedule_binaries(zf: zipfile.ZipFile, trips: list, service_index: dict)
           f"{len(exception_records)} date exceptions, valid {window}, {skipped:,} rows skipped)")
 
 
-def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
+def gen_sd_binaries(zf: zipfile.ZipFile) -> list:
     """sd_card_data/sta/{routes,stops,trips}.bin -- see this script's module
     docstring for why these exist alongside (not instead of) the baked-in
     flash tables, and sta_gtfs_binary.h for the shared record format."""
@@ -573,6 +702,7 @@ def gen_sd_binaries(zf: zipfile.ZipFile) -> None:
     )
     print(f"wrote {SD_DATA_DIR}/{{routes,stops,trips}}.bin "
           f"({len(routes)} routes, {len(stops)} stops, {len(trips)} trips) and {readme}")
+    return trips
 
 
 def main() -> None:
@@ -600,12 +730,23 @@ def main() -> None:
         print(f"resolved latest: {source_name} (mirrored {mirrored_at})")
 
     zf = load_zip(source)
-    gen_route_table(zf)
+    route_diff = gen_route_table(zf)
     gen_stop_table(zf)
-    gen_sd_binaries(zf)
+    trips = gen_sd_binaries(zf)
 
     if args.status_json:
-        status = feed_status(zf, source_name)
+        old_signatures = {}
+        if args.status_json.exists():
+            old_signatures = json.loads(args.status_json.read_text()).get("schedule_signatures", {})
+        new_signatures = route_schedule_signatures(zf, trips)
+        schedule_diff = diff_schedules(old_signatures, new_signatures)
+        if schedule_diff["added"] or schedule_diff["removed"] or schedule_diff["changed"]:
+            print(f"  schedule changed for routes: {schedule_diff['changed'] or '(none)'} "
+                  f"(added {schedule_diff['added'] or '(none)'}, removed {schedule_diff['removed'] or '(none)'})")
+        else:
+            print("  no schedule changes since the last generated card")
+
+        status = feed_status(zf, source_name, route_diff, schedule_diff, new_signatures)
         args.status_json.parent.mkdir(parents=True, exist_ok=True)
         # Trailing newline and sorted keys so a regenerated file that didn't
         # actually change produces an empty diff rather than a commit.
